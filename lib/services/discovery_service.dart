@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import '../core/constants/app_constants.dart';
 import '../core/constants/network_constants.dart';
 import '../core/errors/exceptions.dart';
@@ -24,7 +25,7 @@ class DiscoveryService {
   final StreamController<String> _peerLeftController =
       StreamController.broadcast();
 
-  String? _localIpAddress;
+  List<String> _localIpAddresses = [];
   String? _deviceId;
   String? _deviceName;
   String? _avatarColor;
@@ -48,14 +49,14 @@ class DiscoveryService {
     _avatarColor = avatarColor;
 
     try {
-      _localIpAddress = await _getLocalIpAddress();
+      _localIpAddresses = await _getLocalIpAddresses();
 
-      if (_localIpAddress == null) {
+      if (_localIpAddresses.isEmpty) {
         throw const DiscoveryException('Could not determine local IP address');
       }
 
       AppLogger.instance
-          .info('Discovery service initialized with IP: $_localIpAddress');
+          .info('Discovery service initialized with IPs: $_localIpAddresses');
     } catch (e, stackTrace) {
       AppLogger.instance
           .error('Failed to initialize discovery service', e, stackTrace);
@@ -63,20 +64,24 @@ class DiscoveryService {
     }
   }
 
-  Future<String?> _getLocalIpAddress() async {
+  Future<List<String>> _getLocalIpAddresses() async {
     try {
-      final interfaces = await NetworkInterface.list(includeLoopback: false, type: InternetAddressType.IPv4);
+      final ipAddresses = <String>[];
+      final interfaces = await NetworkInterface.list(
+          includeLoopback: false, type: InternetAddressType.IPv4);
+
       for (final interface in interfaces) {
         for (final addr in interface.addresses) {
           if (addr.type == InternetAddressType.IPv4 && !addr.isLoopback) {
-            return addr.address;
+            ipAddresses.add(addr.address);
           }
         }
       }
-      return null;
+
+      return ipAddresses;
     } catch (e) {
-      AppLogger.instance.warning('Failed to get local IP address: $e');
-      return null;
+      AppLogger.instance.warning('Failed to get local IP addresses: $e');
+      return [];
     }
   }
 
@@ -145,10 +150,13 @@ class DiscoveryService {
     if (_socket == null || !_isRunning) return;
 
     try {
+      final primaryIp =
+          _localIpAddresses.isNotEmpty ? _localIpAddresses.first : '0.0.0.0';
+
       final packet = DiscoveryPacket(
         deviceId: _deviceId!,
         deviceName: _deviceName!,
-        ipAddress: _localIpAddress!,
+        ipAddress: primaryIp,
         platform: _getPlatform(),
         appVersion: AppConstants.appVersion,
         avatarColor: _avatarColor!,
@@ -274,6 +282,18 @@ class DiscoveryService {
     if (Platform.isMacOS) return AppConstants.platformMacOS;
     if (Platform.isLinux) return AppConstants.platformLinux;
     return 'unknown';
+  }
+
+  /// Test-only helper that returns the singleton to its uninitialized state
+  /// so each test starts from a clean slate. Do not call from production code.
+  @visibleForTesting
+  Future<void> resetForTest() async {
+    await stopDiscovery();
+    _deviceId = null;
+    _deviceName = null;
+    _avatarColor = null;
+    _localIpAddresses = [];
+    _activePeers.clear();
   }
 
   void dispose() {

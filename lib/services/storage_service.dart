@@ -57,6 +57,28 @@ class StorageService {
     }
   }
 
+  /// Test-only initializer. Uses [Hive.init] (pure Dart, no platform channels)
+  /// against a caller-provided [path] so services can be exercised in unit
+  /// tests without `path_provider`. Do not call from production code.
+  @visibleForTesting
+  Future<void> initializeForTest(String path) async {
+    if (_isInitialized) return;
+
+    Hive.init(path);
+    _registerAdapters();
+
+    _userProfileBox =
+        await Hive.openBox<UserProfile>(StorageConstants.userProfileBox);
+    _conversationsBox =
+        await Hive.openBox<Conversation>(StorageConstants.conversationsBox);
+    _messagesBox = await Hive.openBox<dynamic>(StorageConstants.messagesBox);
+    _peersBox = await Hive.openBox<PeerDevice>(StorageConstants.peersBox);
+    _settingsBox =
+        await Hive.openBox<AppSettings>(StorageConstants.settingsBox);
+
+    _isInitialized = true;
+  }
+
   void _registerAdapters() {
     if (!Hive.isAdapterRegistered(0)) {
       Hive.registerAdapter(UserProfileAdapter());
@@ -193,6 +215,44 @@ class StorageService {
     }
   }
 
+  List<Message> getMessagesPaginated(
+    String conversationId, {
+    int limit = 50,
+    int offset = 0,
+  }) {
+    try {
+      final messages = _messagesBox.get(conversationId);
+      if (messages == null) {
+        return [];
+      }
+      final sortedMessages = List<Message>.from(messages)
+        ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+      final total = sortedMessages.length;
+      final start = (total - offset - limit).clamp(0, total);
+      final end = (total - offset).clamp(0, total);
+
+      return sortedMessages.sublist(start, end);
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to get paginated messages', e, stackTrace);
+      throw StorageException('Failed to get paginated messages', e);
+    }
+  }
+
+  int getMessageCount(String conversationId) {
+    try {
+      final messages = _messagesBox.get(conversationId);
+      if (messages == null) {
+        return 0;
+      }
+      return (messages as List).length;
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to get message count', e, stackTrace);
+      throw StorageException('Failed to get message count', e);
+    }
+  }
+
   Future<void> replaceMessages(
       String conversationId, List<Message> messages) async {
     try {
@@ -222,6 +282,79 @@ class StorageService {
       AppLogger.instance
           .error('Failed to update message status', e, stackTrace);
       throw StorageException('Failed to update message status', e);
+    }
+  }
+
+  // Offline Message Queue Operations
+  Future<void> enqueueOfflineMessage(Message message) async {
+    try {
+      final queue = _messagesBox.get('offline_queue') as List<Message>?;
+      final messageQueue = queue ?? <Message>[];
+      messageQueue.add(message);
+      await _messagesBox.put('offline_queue', messageQueue);
+      AppLogger.instance
+          .debug('Message enqueued for offline delivery: ${message.id}');
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to enqueue offline message', e, stackTrace);
+      throw StorageException('Failed to enqueue offline message', e);
+    }
+  }
+
+  List<Message> getOfflineQueue() {
+    try {
+      final queue = _messagesBox.get('offline_queue') as List<Message>?;
+      return queue ?? [];
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to get offline queue', e, stackTrace);
+      throw StorageException('Failed to get offline queue', e);
+    }
+  }
+
+  List<Message> getOfflineMessagesForPeer(String peerId) {
+    try {
+      final queue = getOfflineQueue();
+      return queue.where((message) => message.receiverId == peerId).toList();
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to get offline messages for peer', e, stackTrace);
+      throw StorageException('Failed to get offline messages for peer', e);
+    }
+  }
+
+  Future<void> removeOfflineMessage(String messageId) async {
+    try {
+      final queue = _messagesBox.get('offline_queue') as List<Message>?;
+      if (queue != null) {
+        final messageQueue = List<Message>.from(queue);
+        messageQueue.removeWhere((m) => m.id == messageId);
+        await _messagesBox.put('offline_queue', messageQueue);
+        AppLogger.instance
+            .debug('Message removed from offline queue: $messageId');
+      }
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to remove offline message', e, stackTrace);
+      throw StorageException('Failed to remove offline message', e);
+    }
+  }
+
+  Future<void> clearOfflineQueueForPeer(String peerId) async {
+    try {
+      final queue = _messagesBox.get('offline_queue') as List<Message>?;
+      if (queue != null) {
+        final messageQueue = List<Message>.from(queue);
+        final removedCount =
+            messageQueue.where((m) => m.receiverId == peerId).length;
+        messageQueue.removeWhere((m) => m.receiverId == peerId);
+        await _messagesBox.put('offline_queue', messageQueue);
+        AppLogger.instance
+            .debug('Cleared $removedCount offline messages for peer: $peerId');
+      }
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to clear offline queue for peer', e, stackTrace);
+      throw StorageException('Failed to clear offline queue for peer', e);
     }
   }
 

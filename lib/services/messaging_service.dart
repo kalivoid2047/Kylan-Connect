@@ -9,6 +9,7 @@ import '../services/connection_manager.dart';
 import '../services/discovery_service.dart';
 import '../services/notification_service.dart';
 import '../services/storage_service.dart';
+import '../services/typing_service.dart';
 import '../core/utils/app_logger.dart';
 
 class MessagingService {
@@ -69,16 +70,29 @@ class MessagingService {
         isIncoming: false,
       );
 
-      await _sendToPeer(receiverIp, message, receiverId);
+      try {
+        await _sendToPeer(receiverIp, message, receiverId);
 
-      final sentMessage =
-          message.copyWith(status: AppConstants.messageStatusSent);
-      await StorageService.instance.updateMessageStatus(
-          conversationId, message.id, AppConstants.messageStatusSent);
-      _messageStatusController.add(sentMessage);
+        final sentMessage =
+            message.copyWith(status: AppConstants.messageStatusSent);
+        await StorageService.instance.updateMessageStatus(
+            conversationId, message.id, AppConstants.messageStatusSent);
+        _messageStatusController.add(sentMessage);
 
-      AppLogger.instance.info('Message sent to $receiverId: ${message.id}');
-      return sentMessage;
+        AppLogger.instance.info('Message sent to $receiverId: ${message.id}');
+        return sentMessage;
+      } catch (sendError) {
+        // Peer not reachable, enqueue for offline delivery
+        AppLogger.instance.warning(
+            'Peer not reachable, enqueuing for offline delivery: $receiverId');
+        await enqueueMessageForOfflineDelivery(message);
+
+        final queuedMessage =
+            message.copyWith(status: AppConstants.messageStatusSending);
+        _messageStatusController.add(queuedMessage);
+
+        return queuedMessage;
+      }
     } catch (e, stackTrace) {
       await StorageService.instance.updateMessageStatus(
           conversationId, message.id, AppConstants.messageStatusFailed);
@@ -126,8 +140,7 @@ class MessagingService {
         if (attempt < AppConstants.maxRetries - 1) {
           // Exponential back-off: 1 s, 2 s, 4 s …
           await Future<void>.delayed(Duration(
-              milliseconds:
-                  AppConstants.messageRetryDelayMs * (1 << attempt)));
+              milliseconds: AppConstants.messageRetryDelayMs * (1 << attempt)));
         }
       }
     }
@@ -151,6 +164,14 @@ class MessagingService {
           EncryptionService.instance.decryptJsonWithKey(encryptedData, key);
 
       final message = Message.fromJson(decryptedJson);
+
+      // Control messages (ACKs, read receipts, typing) are not stored as
+      // conversation history — they update state and are routed separately.
+      if (message.isControlMessage) {
+        _handleControlMessage(message);
+        return;
+      }
+
       final deliveredMessage =
           message.copyWith(status: AppConstants.messageStatusDelivered);
 
@@ -179,9 +200,148 @@ class MessagingService {
       _messageReceivedController.add(deliveredMessage);
       AppLogger.instance
           .info('Message received from ${message.senderId}: ${message.id}');
+
+      // Tell the sender we received it so their copy flips to "delivered".
+      _sendDeliveryAck(message, peerIp);
     } catch (e, stackTrace) {
       AppLogger.instance
           .error('Failed to handle incoming packet', e, stackTrace);
+    }
+  }
+
+  /// Routes an incoming control message (delivery ACK, read receipt, typing)
+  /// to the appropriate handler. Control messages are never persisted.
+  void _handleControlMessage(Message message) {
+    switch (message.type) {
+      case AppConstants.messageTypeDeliveryAck:
+        _applyOutgoingStatus(
+          peerId: message.senderId,
+          originalMessageId: message.originalMessageId,
+          status: AppConstants.messageStatusDelivered,
+        );
+        break;
+      case AppConstants.messageTypeReadReceipt:
+        _applyOutgoingStatus(
+          peerId: message.senderId,
+          originalMessageId: message.originalMessageId,
+          status: AppConstants.messageStatusRead,
+        );
+        break;
+      case AppConstants.messageTypeTyping:
+        // Receive side of typing indicators; send side lives in TypingService.
+        TypingService.instance.handleTypingIndicator(message);
+        break;
+      default:
+        AppLogger.instance
+            .warning('Unknown control message type: ${message.type}');
+    }
+  }
+
+  /// Ranks a status so that late/duplicate control packets can never move a
+  /// message backwards (e.g. a delayed delivery ACK overwriting "read").
+  int _statusRank(String status) {
+    switch (status) {
+      case AppConstants.messageStatusSending:
+        return 0;
+      case AppConstants.messageStatusSent:
+        return 1;
+      case AppConstants.messageStatusDelivered:
+        return 2;
+      case AppConstants.messageStatusRead:
+        return 3;
+      default:
+        return -1; // failed / unknown — never advanced over by a receipt
+    }
+  }
+
+  /// Applies a delivered/read status update to one of our outgoing messages,
+  /// identified by [originalMessageId] within the conversation with [peerId].
+  Future<void> _applyOutgoingStatus({
+    required String peerId,
+    required String? originalMessageId,
+    required String status,
+  }) async {
+    if (originalMessageId == null) {
+      AppLogger.instance
+          .warning('Control message missing originalMessageId — ignored');
+      return;
+    }
+
+    try {
+      final conversationId =
+          Conversation.generateConversationId(_currentUserId!, peerId);
+      final messages = StorageService.instance.getMessages(conversationId);
+
+      Message? target;
+      for (final m in messages) {
+        if (m.id == originalMessageId) {
+          target = m;
+          break;
+        }
+      }
+      if (target == null) return;
+
+      // Don't move a message backwards to an earlier lifecycle stage.
+      if (_statusRank(status) <= _statusRank(target.status)) return;
+
+      await StorageService.instance
+          .updateMessageStatus(conversationId, originalMessageId, status);
+      _messageStatusController.add(target.copyWith(status: status));
+
+      AppLogger.instance
+          .debug('Outgoing message $originalMessageId -> $status');
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to apply outgoing status update', e, stackTrace);
+    }
+  }
+
+  /// Sends a delivery ACK for a message we just received. Best-effort: if the
+  /// peer's IP is unknown or the send fails, the ACK is simply dropped.
+  Future<void> _sendDeliveryAck(Message original, String peerIp) async {
+    final ack = Message.createDeliveryAck(
+      senderId: _currentUserId!,
+      receiverId: original.senderId,
+      originalMessageId: original.id,
+    );
+    await _sendControlMessage(ack, original.senderId, peerIp);
+  }
+
+  /// Encrypts and sends a control message to a peer without persisting it.
+  /// Best-effort and non-retrying — control packets are disposable.
+  Future<void> _sendControlMessage(
+      Message controlMessage, String receiverId, String receiverIp) async {
+    if (receiverIp.isEmpty) {
+      AppLogger.instance.debug(
+          'No IP for $receiverId — skipping ${controlMessage.type} control message');
+      return;
+    }
+
+    try {
+      final key = EncryptionService.instance
+          .getConversationKey(_currentUserId!, receiverId);
+      final encryptedData = EncryptionService.instance
+          .encryptJsonWithKey(controlMessage.toJson(), key);
+
+      final packet = MessagePacket(
+        id: controlMessage.id,
+        type: controlMessage.type,
+        senderId: controlMessage.senderId,
+        receiverId: controlMessage.receiverId,
+        payload: {'encrypted': encryptedData},
+        timestamp: controlMessage.timestamp,
+      );
+
+      if (!ConnectionManager.instance.isConnectedTo(receiverIp)) {
+        await ConnectionManager.instance.connectToPeer(receiverIp);
+      }
+      await ConnectionManager.instance.sendPacket(receiverIp, packet);
+      AppLogger.instance
+          .debug('Sent ${controlMessage.type} control message to $receiverId');
+    } catch (e) {
+      // Control messages are disposable — a failure here is not user-facing.
+      AppLogger.instance.debug(
+          'Failed to send ${controlMessage.type} control message to $receiverId: $e');
     }
   }
 
@@ -211,8 +371,8 @@ class MessagingService {
             existing?.participantName != 'Unknown' && existing != null
                 ? existing.participantName
                 : peerName,
-        participantAvatarColor: existing?.participantAvatarColor ??
-            peerAvatarColor,
+        participantAvatarColor:
+            existing?.participantAvatarColor ?? peerAvatarColor,
         lastMessage: lastMessage,
         lastMessageTime: DateTime.now(),
         unreadCount: newUnreadCount,
@@ -241,6 +401,11 @@ class MessagingService {
       if (conversation != null && conversation.unreadCount > 0) {
         await StorageService.instance
             .saveConversation(conversation.copyWith(unreadCount: 0));
+
+        // Let the peer know we've read their messages so their copies flip
+        // to "read". Only fires when there were genuinely unread messages,
+        // which keeps read receipts from being re-sent on every open.
+        await _sendReadReceipts(conversation.participantId);
       }
     } catch (e, stackTrace) {
       AppLogger.instance
@@ -248,12 +413,92 @@ class MessagingService {
     }
   }
 
-  Future<void> deleteMessage(
-      String conversationId, String messageId) async {
+  /// Sends read receipts for the incoming messages in this conversation.
+  Future<void> _sendReadReceipts(String peerId) async {
+    final peerIp = DiscoveryService.instance.getPeer(peerId)?.ipAddress ?? '';
+    if (peerIp.isEmpty) return; // Peer offline — receipts are best-effort.
+
+    final conversationId =
+        Conversation.generateConversationId(_currentUserId!, peerId);
+    final messages = StorageService.instance.getMessages(conversationId);
+
+    for (final message in messages) {
+      // Only acknowledge messages the peer sent us (incoming).
+      if (message.senderId != peerId) continue;
+      if (message.isControlMessage) continue;
+
+      final receipt = Message.createReadReceipt(
+        senderId: _currentUserId!,
+        receiverId: peerId,
+        originalMessageId: message.id,
+      );
+      await _sendControlMessage(receipt, peerId, peerIp);
+    }
+  }
+
+  /// Flush offline messages for a peer when they come back online.
+  /// Called when discovery service detects a peer.
+  Future<void> flushOfflineMessagesForPeer(String peerId, String peerIp) async {
+    try {
+      final offlineMessages =
+          StorageService.instance.getOfflineMessagesForPeer(peerId);
+
+      if (offlineMessages.isEmpty) {
+        AppLogger.instance
+            .debug('No offline messages to flush for peer: $peerId');
+        return;
+      }
+
+      AppLogger.instance.info(
+          'Flushing ${offlineMessages.length} offline messages for peer: $peerId');
+
+      for (final message in offlineMessages) {
+        try {
+          await _sendToPeer(peerIp, message, peerId);
+
+          final conversationId =
+              Conversation.generateConversationId(_currentUserId!, peerId);
+          await StorageService.instance.updateMessageStatus(
+              conversationId, message.id, AppConstants.messageStatusSent);
+
+          await StorageService.instance.removeOfflineMessage(message.id);
+
+          AppLogger.instance.debug('Flushed offline message: ${message.id}');
+        } catch (e) {
+          AppLogger.instance
+              .warning('Failed to flush offline message ${message.id}: $e');
+          // Keep message in queue for next attempt
+        }
+      }
+
+      // Clear queue for this peer if all messages were sent
+      final remaining =
+          StorageService.instance.getOfflineMessagesForPeer(peerId);
+      if (remaining.isEmpty) {
+        await StorageService.instance.clearOfflineQueueForPeer(peerId);
+      }
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to flush offline messages', e, stackTrace);
+    }
+  }
+
+  /// Enqueue a message for offline delivery if peer is not reachable.
+  Future<void> enqueueMessageForOfflineDelivery(Message message) async {
+    try {
+      await StorageService.instance.enqueueOfflineMessage(message);
+      AppLogger.instance
+          .info('Message enqueued for offline delivery: ${message.id}');
+    } catch (e, stackTrace) {
+      AppLogger.instance.error(
+          'Failed to enqueue message for offline delivery', e, stackTrace);
+    }
+  }
+
+  Future<void> deleteMessage(String conversationId, String messageId) async {
     try {
       final messages = StorageService.instance.getMessages(conversationId);
-      final filtered =
-          messages.where((m) => m.id != messageId).toList();
+      final filtered = messages.where((m) => m.id != messageId).toList();
       await StorageService.instance.replaceMessages(conversationId, filtered);
       AppLogger.instance.debug('Message deleted: $messageId');
     } catch (e, stackTrace) {

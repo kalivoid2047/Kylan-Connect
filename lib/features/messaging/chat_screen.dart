@@ -31,6 +31,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   late String _participantAvatarColor;
   String _participantIp = '';
   bool _isLoading = false;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+  int _currentOffset = 0;
+  static const int _pageSize = 50;
   bool _didLoadArguments = false;
   StreamSubscription<Message>? _messageSubscription;
   StreamSubscription<Message>? _statusSubscription;
@@ -43,6 +47,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     _statusSubscription = MessagingService.instance.onMessageStatusChanged
         .listen((_) => _loadMessages());
+
+    _scrollController.addListener(_onScroll);
   }
 
   @override
@@ -68,6 +74,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     super.dispose();
   }
 
+  void _onScroll() {
+    if (_scrollController.position.pixels ==
+        _scrollController.position.minScrollExtent) {
+      _loadMoreMessages();
+    }
+  }
+
   void _loadArguments() {
     final args = ModalRoute.of(context)?.settings.arguments;
     if (args is! Map<String, dynamic>) {
@@ -89,16 +102,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     setState(() {
       _isLoading = true;
+      _currentOffset = 0;
+      _hasMore = true;
     });
 
     try {
-      final messages = await ChatRepository.instance.getMessages(
+      final messages = ChatRepository.instance.getMessagesPaginated(
         _conversationId,
+        limit: _pageSize,
+        offset: 0,
       );
+      final totalCount =
+          ChatRepository.instance.getMessageCount(_conversationId);
+
       if (!mounted) return;
       setState(() {
         _messages = messages;
         _isLoading = false;
+        _hasMore = totalCount > _pageSize;
       });
 
       _scrollToBottom();
@@ -106,6 +127,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _loadMoreMessages() async {
+    if (_isLoadingMore || !_hasMore || _conversationId.isEmpty) return;
+
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    try {
+      _currentOffset += _pageSize;
+      final newMessages = ChatRepository.instance.getMessagesPaginated(
+        _conversationId,
+        limit: _pageSize,
+        offset: _currentOffset,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _messages = [...newMessages, ..._messages];
+        _isLoadingMore = false;
+        _hasMore = newMessages.length == _pageSize;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingMore = false;
       });
     }
   }
@@ -154,7 +204,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           _isLoading = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This device is not currently reachable')),
+          const SnackBar(
+              content: Text('This device is not currently reachable')),
         );
         return;
       }
@@ -226,7 +277,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     style: const TextStyle(fontSize: 16),
                   ),
                   Builder(builder: (context) {
-                    final peer = DiscoveryService.instance.getPeer(_participantId);
+                    final peer =
+                        DiscoveryService.instance.getPeer(_participantId);
                     final isOnline = peer?.isOnline ?? false;
                     return Text(
                       isOnline ? 'Online' : 'Offline',
@@ -371,10 +423,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 Icon(
                   _getStatusIcon(message.status),
                   size: 12,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withValues(alpha: 0.5),
+                  color: message.status == AppConstants.messageStatusRead
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.5),
                 ),
               ],
             ],
@@ -389,6 +443,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       case AppConstants.messageStatusSent:
         return Icons.check;
       case AppConstants.messageStatusDelivered:
+      case AppConstants.messageStatusRead:
         return Icons.done_all;
       case AppConstants.messageStatusFailed:
         return Icons.error_outline;

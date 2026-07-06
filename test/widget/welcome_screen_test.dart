@@ -5,7 +5,8 @@ import 'package:kylan_connect/features/onboarding/welcome_screen.dart';
 
 void main() {
   group('WelcomeScreen Widget Tests', () {
-    testWidgets('should display app name', (WidgetTester tester) async {
+    testWidgets('should display branding logo and tagline',
+        (WidgetTester tester) async {
       await tester.pumpWidget(
         const ProviderScope(
           child: MaterialApp(
@@ -14,7 +15,10 @@ void main() {
         ),
       );
 
-      expect(find.text('Kylan Connect'), findsOneWidget);
+      // The app name is presented as a logo image plus the tagline, rather
+      // than a literal "Kylan Connect" text title.
+      expect(find.byType(Image), findsOneWidget);
+      expect(find.text('Offline Peer-to-Peer Messaging'), findsOneWidget);
     });
 
     testWidgets('should display feature list', (WidgetTester tester) async {
