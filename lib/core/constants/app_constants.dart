@@ -40,6 +40,12 @@ class AppConstants {
   static const String messageTypeTyping = 'typing';
   static const String messageTypeDeliveryAck = 'delivery_ack';
   static const String messageTypeReadReceipt = 'read_receipt';
+  static const String messageTypeImageChunk = 'image_chunk';
+
+  // Image Transfer
+  static const int imageChunkSize = 32 * 1024; // raw bytes per chunk
+  static const int thumbnailMaxDimension = 320; // px, longest edge
+  static const int maxImageBytes = 25 * 1024 * 1024; // reject larger transfers
 
   // Message Status
   static const String messageStatusSending = 'sending';

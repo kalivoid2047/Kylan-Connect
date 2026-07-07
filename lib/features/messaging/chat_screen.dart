@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/validators.dart';
 import '../../core/utils/extensions.dart';
@@ -11,6 +15,7 @@ import '../../repositories/chat_repository.dart';
 import '../../repositories/peer_repository.dart';
 import '../../services/app_startup_service.dart';
 import '../../services/discovery_service.dart';
+import '../../services/image_service.dart';
 import '../../services/messaging_service.dart';
 import '../../services/typing_service.dart';
 
@@ -42,6 +47,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   StreamSubscription<Message>? _statusSubscription;
   StreamSubscription<String>? _typingStartedSubscription;
   StreamSubscription<String>? _typingStoppedSubscription;
+  StreamSubscription<String>? _imageReadySubscription;
 
   // Throttles how often we emit an outgoing typing indicator while the user
   // types. Kept shorter than the receiver's typing timeout so the indicator
@@ -71,6 +77,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     });
 
+    // A finished image download means a bubble can now show the full image.
+    _imageReadySubscription =
+        MessagingService.instance.onImageReady.listen((_) {
+      if (mounted) _loadMessages();
+    });
+
     _scrollController.addListener(_onScroll);
   }
 
@@ -94,6 +106,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _statusSubscription?.cancel();
     _typingStartedSubscription?.cancel();
     _typingStoppedSubscription?.cancel();
+    _imageReadySubscription?.cancel();
     _typingThrottle?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
@@ -285,6 +298,69 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return peer?.ipAddress ?? '';
   }
 
+  Future<void> _pickAndSendImage() async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 90,
+    );
+    if (picked == null || !mounted) return;
+
+    final profile = ref.read(profileProvider);
+    if (profile == null) {
+      _showSnack('Create a profile before messaging');
+      return;
+    }
+
+    final receiverIp = _resolveParticipantIp();
+    if (receiverIp.isEmpty) {
+      _showSnack('This device is not currently reachable');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      if (!MessagingService.instance.isInitialized) {
+        await AppStartupService.instance.startPeerServices(profile);
+      }
+      await MessagingService.instance.sendImage(
+        receiverId: _participantId,
+        receiverIp: receiverIp,
+        imageFile: File(picked.path),
+      );
+      if (mounted) setState(() => _participantIp = receiverIp);
+      await _loadMessages();
+    } catch (e) {
+      _showSnack('Failed to send image: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _openFullImage(Message message) async {
+    final transferId = message.imageTransferId;
+    final fileName = message.imageFileName;
+    if (transferId == null || fileName == null) return;
+
+    final path = await ImageService.instance.localPathFor(transferId, fileName);
+    if (!await File(path).exists()) {
+      _showSnack('Image is still downloading…');
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _FullImageScreen(path: path, title: fileName),
+      ),
+    );
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -437,21 +513,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.7,
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: message.isImage
+                ? const EdgeInsets.all(4)
+                : const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               color: isMe
                   ? Theme.of(context).colorScheme.primary
                   : Theme.of(context).colorScheme.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(16),
             ),
-            child: Text(
-              message.textContent ?? '',
-              style: TextStyle(
-                color: isMe
-                    ? Colors.white
-                    : Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
+            child: message.isImage
+                ? _buildImageContent(message, isMe)
+                : Text(
+                    message.textContent ?? '',
+                    style: TextStyle(
+                      color: isMe
+                          ? Colors.white
+                          : Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
           ),
           const SizedBox(height: 4),
           Row(
@@ -480,6 +560,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
               ],
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImageContent(Message message, bool isMe) {
+    final thumb = message.thumbnailBase64;
+    Uint8List? thumbBytes;
+    if (thumb != null && thumb.isNotEmpty) {
+      try {
+        thumbBytes = base64Decode(thumb);
+      } catch (_) {
+        thumbBytes = null;
+      }
+    }
+
+    final captionColor = isMe
+        ? Colors.white.withValues(alpha: 0.85)
+        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7);
+
+    return GestureDetector(
+      onTap: () => _openFullImage(message),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: thumbBytes != null
+                ? Image.memory(thumbBytes, width: 220, fit: BoxFit.cover)
+                : Container(
+                    width: 220,
+                    height: 160,
+                    color: Colors.black12,
+                    child: const Icon(Icons.broken_image, size: 40),
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 6, 6, 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.image, size: 14, color: captionColor),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    message.imageFileName ?? 'Photo',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: captionColor),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -517,10 +651,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: Row(
           children: [
             IconButton(
-              icon: const Icon(Icons.attach_file),
-              onPressed: () {
-                // Future: File attachment
-              },
+              icon: const Icon(Icons.image_outlined),
+              tooltip: 'Send a photo',
+              onPressed: _isLoading ? null : _pickAndSendImage,
             ),
             Expanded(
               child: TextField(
@@ -614,6 +747,33 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             child: const Text('Clear'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Full-screen, pinch-to-zoom viewer for a downloaded image.
+class _FullImageScreen extends StatelessWidget {
+  final String path;
+  final String title;
+
+  const _FullImageScreen({required this.path, required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text(title, style: const TextStyle(fontSize: 16)),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          minScale: 0.5,
+          maxScale: 4,
+          child: Image.file(File(path)),
+        ),
       ),
     );
   }

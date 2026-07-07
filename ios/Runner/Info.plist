@@ -65,6 +65,10 @@
 	<!-- Required for iOS 14+ local network (UDP discovery + TCP messaging) -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Kylan Connect needs local network access to discover nearby devices and exchange messages directly without the internet.</string>
+
+	<!-- Required to attach photos to messages (image_picker) -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Kylan Connect needs access to your photo library so you can send photos in chats.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_kylanconnect._tcp</string>
