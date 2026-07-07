@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Required for the UDP broadcast used by device discovery on iOS 14+.
+	  This is a managed entitlement: it must also be requested from and granted
+	  by Apple (developer.apple.com) and included in the provisioning profile,
+	  otherwise broadcast/multicast sockets are blocked on device.
+	-->
+	<key>com.apple.developer.networking.multicast</key>
+	<true/>
+</dict>
+</plist>

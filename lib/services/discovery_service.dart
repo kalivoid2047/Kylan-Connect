@@ -154,35 +154,62 @@ class DiscoveryService {
     if (_socket == null || !_isRunning) return;
 
     try {
-      final primaryIp =
-          _localIpAddresses.isNotEmpty ? _localIpAddresses.first : '0.0.0.0';
+      final publicKey = CryptoService.instance.isReady
+          ? CryptoService.instance.publicKeyBase64
+          : null;
 
-      final packet = DiscoveryPacket(
-        deviceId: _deviceId!,
-        deviceName: _deviceName!,
-        ipAddress: primaryIp,
-        platform: _getPlatform(),
-        appVersion: AppConstants.appVersion,
-        avatarColor: _avatarColor!,
-        timestamp: DateTime.now(),
-        publicKey: CryptoService.instance.isReady
-            ? CryptoService.instance.publicKeyBase64
-            : null,
-      );
+      if (_localIpAddresses.isEmpty) {
+        // No interfaces enumerated — fall back to a single limited broadcast.
+        _sendPresence('0.0.0.0', NetworkConstants.broadcastAddress, publicKey);
+        return;
+      }
 
-      final jsonData = jsonEncode(packet.toJson());
-      final data = utf8.encode(jsonData);
+      // Send one packet per interface to that subnet's directed broadcast so a
+      // multi-homed host reaches peers on every network (a single limited
+      // broadcast only egresses one interface). Each packet advertises the
+      // sender's IP *on that subnet*, so the address a peer sees is reachable.
+      for (final localIp in _localIpAddresses) {
+        _sendPresence(localIp, _directedBroadcastFor(localIp), publicKey);
+      }
 
-      _socket!.send(
-        data,
-        InternetAddress(NetworkConstants.broadcastAddress),
-        AppConstants.discoveryPort,
-      );
+      // Also emit a limited broadcast as a fallback for networks that filter
+      // directed broadcasts, advertising the primary interface address.
+      _sendPresence(_localIpAddresses.first, NetworkConstants.broadcastAddress,
+          publicKey);
 
-      AppLogger.instance.debug('Broadcast presence: ${packet.deviceName}');
+      AppLogger.instance
+          .debug('Broadcast presence on ${_localIpAddresses.length} interface(s)');
     } catch (e, stackTrace) {
       AppLogger.instance.error('Failed to broadcast presence', e, stackTrace);
     }
+  }
+
+  /// Sends a discovery packet advertising [advertisedIp] to [destination].
+  void _sendPresence(
+      String advertisedIp, String destination, String? publicKey) {
+    final packet = DiscoveryPacket(
+      deviceId: _deviceId!,
+      deviceName: _deviceName!,
+      ipAddress: advertisedIp,
+      platform: _getPlatform(),
+      appVersion: AppConstants.appVersion,
+      avatarColor: _avatarColor!,
+      timestamp: DateTime.now(),
+      publicKey: publicKey,
+    );
+
+    final data = utf8.encode(jsonEncode(packet.toJson()));
+    _socket!.send(data, InternetAddress(destination), AppConstants.discoveryPort);
+  }
+
+  /// The /24 directed broadcast address for [ip] (e.g. 192.168.1.7 → 192.168.1.255).
+  /// Dart exposes no netmask, so we assume the common /24; the limited-broadcast
+  /// fallback covers other prefix lengths. Malformed input falls back to the
+  /// limited broadcast.
+  String _directedBroadcastFor(String ip) {
+    final octets = ip.split('.');
+    if (octets.length != 4) return NetworkConstants.broadcastAddress;
+    return '${octets[0]}.${octets[1]}.${octets[2]}.255';
   }
 
   void _handleSocketEvent(RawSocketEvent event) {

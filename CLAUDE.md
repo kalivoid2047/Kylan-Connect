@@ -33,9 +33,9 @@ Kylan Connect is a production-ready offline peer-to-peer messaging platform that
 - ✅ **Delivery ACKs + read receipts** — control messages routed in MessagingService; never persisted; status can only advance (sending<sent<delivered<read).
 - ✅ **Offline message queue**: persist unsent messages in Hive, flush when discovery sees the peer again.
 - ✅ **Message pagination** in storage and chat screen.
-- ⏳ **Interface selection fix**: discovery collects all non-loopback IPv4 interfaces but still broadcasts on only the first — finish broadcasting on all, or prefer the private-range gateway.
+- ✅ **Interface selection fix**: discovery now sends a packet per non-loopback IPv4 interface to that subnet's directed broadcast (advertising the sender's IP on that subnet), plus a limited-broadcast fallback. Assumes /24 for the directed broadcast (Dart exposes no netmask); the fallback covers other prefixes.
 - ✅ **Unit tests** for DiscoveryService, ConnectionManager, MessagingService, CryptoService + one two-instance integration test.
-- ⏳ **Verify iOS local-network permission** (NSLocalNetworkUsageDescription) — Android permissions are done, iOS likely isn't.
+- ✅ **iOS local-network permission**: `NSLocalNetworkUsageDescription` + `NSBonjourServices` present; added `Runner.entitlements` with `com.apple.developer.networking.multicast` (required for UDP broadcast on iOS 14+) and wired `CODE_SIGN_ENTITLEMENTS` into all three Runner build configs. **Manual step remaining**: the multicast entitlement is Apple-managed — request it at developer.apple.com, add it to the provisioning profile, and validate on a real device.
 
 ### Phase 2 — Rich messaging (~1 month)
 **Ordered easiest → hardest, each exercising the protocol's type system:**
