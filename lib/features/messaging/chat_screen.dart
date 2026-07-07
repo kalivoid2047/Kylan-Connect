@@ -12,6 +12,7 @@ import '../../repositories/peer_repository.dart';
 import '../../services/app_startup_service.dart';
 import '../../services/discovery_service.dart';
 import '../../services/messaging_service.dart';
+import '../../services/typing_service.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -36,8 +37,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   int _currentOffset = 0;
   static const int _pageSize = 50;
   bool _didLoadArguments = false;
+  bool _isPeerTyping = false;
   StreamSubscription<Message>? _messageSubscription;
   StreamSubscription<Message>? _statusSubscription;
+  StreamSubscription<String>? _typingStartedSubscription;
+  StreamSubscription<String>? _typingStoppedSubscription;
+
+  // Throttles how often we emit an outgoing typing indicator while the user
+  // types. Kept shorter than the receiver's typing timeout so the indicator
+  // stays alive between keystrokes.
+  Timer? _typingThrottle;
+  static const Duration _typingSendInterval = Duration(seconds: 2);
 
   @override
   void initState() {
@@ -47,6 +57,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     _statusSubscription = MessagingService.instance.onMessageStatusChanged
         .listen((_) => _loadMessages());
+
+    _typingStartedSubscription =
+        TypingService.instance.onTypingStarted.listen((deviceId) {
+      if (deviceId == _participantId && mounted) {
+        setState(() => _isPeerTyping = true);
+      }
+    });
+    _typingStoppedSubscription =
+        TypingService.instance.onTypingStopped.listen((deviceId) {
+      if (deviceId == _participantId && mounted) {
+        setState(() => _isPeerTyping = false);
+      }
+    });
 
     _scrollController.addListener(_onScroll);
   }
@@ -69,9 +92,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void dispose() {
     _messageSubscription?.cancel();
     _statusSubscription?.cancel();
+    _typingStartedSubscription?.cancel();
+    _typingStoppedSubscription?.cancel();
+    _typingThrottle?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// Called on each keystroke. Emits a typing indicator to the peer at most
+  /// once per [_typingSendInterval] so we don't flood the network.
+  void _onComposerChanged(String value) {
+    if (value.isEmpty) return;
+    if (_participantId.isEmpty || _participantIp.isEmpty) return;
+    if (_typingThrottle?.isActive ?? false) return;
+
+    MessagingService.instance
+        .sendTypingIndicator(_participantId, _participantIp);
+    _typingThrottle = Timer(_typingSendInterval, () {});
   }
 
   void _onScroll() {
@@ -277,6 +315,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     style: const TextStyle(fontSize: 16),
                   ),
                   Builder(builder: (context) {
+                    if (_isPeerTyping) {
+                      return Text(
+                        'typing…',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      );
+                    }
                     final peer =
                         DiscoveryService.instance.getPeer(_participantId);
                     final isOnline = peer?.isOnline ?? false;
@@ -493,6 +541,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
                 maxLines: null,
                 textCapitalization: TextCapitalization.sentences,
+                onChanged: _onComposerChanged,
                 onSubmitted: (_) => _sendMessage(),
               ),
             ),

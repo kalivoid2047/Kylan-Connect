@@ -182,6 +182,10 @@ class MessagingService {
         return;
       }
 
+      // A real message means the peer is no longer typing — clear it now so
+      // the indicator doesn't linger until its timeout.
+      TypingService.instance.clearTyping(message.senderId);
+
       final deliveredMessage =
           message.copyWith(status: AppConstants.messageStatusDelivered);
 
@@ -304,6 +308,17 @@ class MessagingService {
       AppLogger.instance
           .error('Failed to apply outgoing status update', e, stackTrace);
     }
+  }
+
+  /// Sends a typing indicator to a peer. Ephemeral, best-effort, not persisted.
+  /// The chat screen throttles how often this is called while the user types.
+  Future<void> sendTypingIndicator(String receiverId, String receiverIp) async {
+    if (!_isInitialized) return;
+    final typing = Message.createTypingIndicator(
+      senderId: _currentUserId!,
+      receiverId: receiverId,
+    );
+    await _sendControlMessage(typing, receiverId, receiverIp);
   }
 
   /// Sends a delivery ACK for a message we just received. Best-effort: if the

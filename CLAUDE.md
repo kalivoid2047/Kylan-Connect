@@ -40,7 +40,7 @@ Kylan Connect is a production-ready offline peer-to-peer messaging platform that
 ### Phase 2 — Rich messaging (~1 month)
 **Ordered easiest → hardest, each exercising the protocol's type system:**
 
-- Typing indicators (pure control packet, no storage)
+- ✅ Typing indicators (pure control packet, no storage). Encrypted `typing` control message; `MessagingService.sendTypingIndicator` sends, `TypingService` tracks who's typing (receive-only, 4s auto-expiry), chat screen throttles sends (2s) and shows "typing…" in the app-bar subtitle.
 - Image sharing (chunked transfer over the existing TCP channel, thumbnails in Hive, files on disk)
 - File sharing (generalizes the image pipeline)
 - Voice messages (recording UI + the file pipeline)
