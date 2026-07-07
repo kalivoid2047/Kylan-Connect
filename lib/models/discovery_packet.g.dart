@@ -15,6 +15,7 @@ DiscoveryPacket _$DiscoveryPacketFromJson(Map<String, dynamic> json) =>
       appVersion: json['appVersion'] as String,
       avatarColor: json['avatarColor'] as String,
       timestamp: DateTime.parse(json['timestamp'] as String),
+      publicKey: json['publicKey'] as String?,
     );
 
 Map<String, dynamic> _$DiscoveryPacketToJson(DiscoveryPacket instance) =>
@@ -26,4 +27,5 @@ Map<String, dynamic> _$DiscoveryPacketToJson(DiscoveryPacket instance) =>
       'appVersion': instance.appVersion,
       'avatarColor': instance.avatarColor,
       'timestamp': instance.timestamp.toIso8601String(),
+      'publicKey': instance.publicKey,
     };

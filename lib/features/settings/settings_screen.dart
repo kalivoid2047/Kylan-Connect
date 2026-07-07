@@ -202,7 +202,7 @@ class SettingsScreen extends ConsumerWidget {
           child: ListTile(
             leading: Icon(Icons.lock),
             title: Text('Encryption'),
-            subtitle: Text('AES-256 encryption enabled'),
+            subtitle: Text('X25519 + AES-256-GCM enabled'),
             trailing: Icon(Icons.check_circle, color: Colors.green),
           ),
         ),

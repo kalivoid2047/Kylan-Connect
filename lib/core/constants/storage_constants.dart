@@ -5,9 +5,13 @@ class StorageConstants {
   static const String messagesBox = 'messages_box';
   static const String peersBox = 'peers_box';
   static const String settingsBox = 'settings_box';
-  
+  static const String keysBox = 'keys_box';
+
   // Key Names
   static const String currentProfileKey = 'current_profile';
+  static const String devicePrivateKeyKey = 'device_private_key';
+  static const String devicePublicKeyKey = 'device_public_key';
+  static const String pinnedPeerKeyPrefix = 'peer_pub_';
   static const String settingsKey = 'settings';
   static const String themeKey = 'theme_mode';
   static const String languageKey = 'language';

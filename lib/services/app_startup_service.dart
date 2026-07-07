@@ -1,3 +1,4 @@
+import '../core/security/crypto_service.dart';
 import '../core/utils/app_logger.dart';
 import '../models/user_profile.dart';
 import '../repositories/profile_repository.dart';
@@ -29,6 +30,10 @@ class AppStartupService {
   }
 
   Future<void> startPeerServices(UserProfile profile) async {
+    // Ensure the device's X25519 identity keypair exists before any peer
+    // networking so discovery can advertise the public key immediately.
+    await CryptoService.instance.ensureIdentityKeys();
+
     await MessagingService.instance.initialize(profile.deviceId);
 
     try {

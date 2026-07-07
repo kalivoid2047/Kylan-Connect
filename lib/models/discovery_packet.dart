@@ -13,7 +13,11 @@ class DiscoveryPacket {
   final String appVersion;
   final String avatarColor;
   final DateTime timestamp;
-  
+
+  /// Base64 X25519 public key used to derive the E2E session key. Nullable so
+  /// packets from older builds (which omit it) still deserialize.
+  final String? publicKey;
+
   DiscoveryPacket({
     required this.deviceId,
     required this.deviceName,
@@ -22,6 +26,7 @@ class DiscoveryPacket {
     required this.appVersion,
     required this.avatarColor,
     required this.timestamp,
+    this.publicKey,
   });
   
   factory DiscoveryPacket.fromJson(Map<String, dynamic> json) =>

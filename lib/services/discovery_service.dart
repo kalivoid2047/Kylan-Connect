@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../core/constants/app_constants.dart';
 import '../core/constants/network_constants.dart';
 import '../core/errors/exceptions.dart';
+import '../core/security/crypto_service.dart';
 import '../models/discovery_packet.dart';
 import '../models/peer_device.dart';
 import '../services/storage_service.dart';
@@ -49,6 +50,9 @@ class DiscoveryService {
     _avatarColor = avatarColor;
 
     try {
+      // Make sure our X25519 identity keypair exists before we broadcast it.
+      await CryptoService.instance.ensureIdentityKeys();
+
       _localIpAddresses = await _getLocalIpAddresses();
 
       if (_localIpAddresses.isEmpty) {
@@ -161,6 +165,9 @@ class DiscoveryService {
         appVersion: AppConstants.appVersion,
         avatarColor: _avatarColor!,
         timestamp: DateTime.now(),
+        publicKey: CryptoService.instance.isReady
+            ? CryptoService.instance.publicKeyBase64
+            : null,
       );
 
       final jsonData = jsonEncode(packet.toJson());
@@ -217,6 +224,18 @@ class DiscoveryService {
       );
 
       _activePeers[packet.deviceId] = peer;
+
+      // Pin the peer's public key on first sighting (trust-on-first-use) so we
+      // can derive the E2E session key and detect later key changes.
+      if (packet.publicKey != null) {
+        final ok = CryptoService.instance
+            .pinPeerPublicKey(packet.deviceId, packet.publicKey!);
+        if (!ok) {
+          AppLogger.instance.warning(
+              'Discovered ${packet.deviceName} with a changed public key — '
+              'ignoring the new key.');
+        }
+      }
 
       // Persist peer so conversations started from history can resolve the IP later.
       StorageService.instance.savePeer(peer);

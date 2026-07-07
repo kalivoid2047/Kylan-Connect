@@ -8,13 +8,13 @@ Kylan Connect is a production-ready offline peer-to-peer messaging platform that
 - **Language**: Dart 3.0.0+
 - **State Management**: Riverpod
 - **Local Storage**: Hive
-- **Encryption**: encrypt package (AES-256)
+- **Encryption**: cryptography package (X25519 + AES-256-GCM + HKDF)
 - **Testing**: flutter_test, mockito
 
 ## Architecture
 - **Pattern**: Clean Architecture with Feature-First approach
 - **Networking**: UDP broadcast for discovery, TCP for messaging
-- **Encryption**: AES-256 CBC with random IV
+- **Encryption**: X25519 ECDH → HKDF-SHA256 session key → AES-256-GCM (authenticated). Public keys broadcast in discovery and pinned trust-on-first-use.
 - **Storage**: Hive for local persistence
 
 ## Development Roadmap
@@ -29,13 +29,13 @@ Kylan Connect is a production-ready offline peer-to-peer messaging platform that
 ### Phase 1 — Security & reliability hardening (IN PROGRESS)
 **Priority: Must complete before new features**
 
-- **Real E2E encryption**: per-device X25519 keypair, ECDH key agreement during handshake, AES-GCM for messages. Peer identity becomes the public-key fingerprint (fixes spoofing too). The cryptography package covers all of it.
-- **Delivery ACKs + read receipts** — the MessagePacket.type field already reserves room for control messages.
-- **Offline message queue**: persist unsent messages in Hive, flush when discovery sees the peer again.
-- **Message pagination** in storage and chat screen.
-- **Interface selection fix**: broadcast on all non-loopback interfaces, or prefer the one with a private-range gateway.
-- **Unit tests** for DiscoveryService, ConnectionManager, MessagingService (mocked sockets) + one two-instance integration test.
-- **Verify iOS local-network permission** (NSLocalNetworkUsageDescription) — Android permissions are done, iOS likely isn't.
+- ✅ **Real E2E encryption**: per-device X25519 keypair (persisted in Hive), non-interactive ECDH key agreement (public key broadcast in discovery), HKDF-SHA256 session key, AES-256-GCM for messages. Peer public keys are pinned trust-on-first-use to detect spoofing/MITM. Implemented in `CryptoService`. Tradeoff: static keys → no per-message forward secrecy (a future ephemeral-key handshake could add it); identity is still the UUID deviceId (not the fingerprint).
+- ✅ **Delivery ACKs + read receipts** — control messages routed in MessagingService; never persisted; status can only advance (sending<sent<delivered<read).
+- ✅ **Offline message queue**: persist unsent messages in Hive, flush when discovery sees the peer again.
+- ✅ **Message pagination** in storage and chat screen.
+- ⏳ **Interface selection fix**: discovery collects all non-loopback IPv4 interfaces but still broadcasts on only the first — finish broadcasting on all, or prefer the private-range gateway.
+- ✅ **Unit tests** for DiscoveryService, ConnectionManager, MessagingService, CryptoService + one two-instance integration test.
+- ⏳ **Verify iOS local-network permission** (NSLocalNetworkUsageDescription) — Android permissions are done, iOS likely isn't.
 
 ### Phase 2 — Rich messaging (~1 month)
 **Ordered easiest → hardest, each exercising the protocol's type system:**
@@ -77,12 +77,13 @@ Handles message sending/receiving:
 - `getMessages()`: Get conversation messages
 - `markAsRead()`: Mark conversation as read
 
-### EncryptionService
-Provides encryption/decryption:
-- `encrypt()`: Encrypt data
-- `decrypt()`: Decrypt data
-- `encryptJson()`: Encrypt JSON object
-- `decryptJson()`: Decrypt JSON object
+### CryptoService
+Provides end-to-end encryption (X25519 + AES-256-GCM):
+- `ensureIdentityKeys()`: Load or generate the device's X25519 keypair
+- `publicKeyBase64`: Our public key (broadcast in discovery)
+- `pinPeerPublicKey()`: Pin a peer's key (TOFU); returns false on key change
+- `encryptFor()` / `decryptFrom()`: Seal/open a message for a peer deviceId
+- `canEncryptFor()`: Whether a peer's key is known/pinned
 
 ## Protocol Design
 
@@ -95,7 +96,8 @@ Provides encryption/decryption:
   "platform": "android",
   "appVersion": "1.0.0",
   "avatarColor": "#4ECDC4",
-  "timestamp": "iso-date"
+  "timestamp": "iso-date",
+  "publicKey": "base64-x25519-public-key"
 }
 ```
 
@@ -103,18 +105,21 @@ Provides encryption/decryption:
 ```json
 {
   "id": "uuid",
-  "type": "text|image|voice|file|typing",
+  "type": "text|image|voice|file|typing|delivery_ack|read_receipt",
   "senderId": "uuid",
   "receiverId": "uuid",
   "timestamp": "iso-date",
   "payload": {
-    // Type-specific data
+    "encrypted": "base64(nonce | AES-GCM ciphertext | tag)"
   }
 }
 ```
+The `payload.encrypted` blob decrypts to the full inner Message JSON (the real
+type/text live there). Control messages (ACKs, read receipts, typing) are
+encrypted the same way but never persisted.
 
 ## Important Notes
 - Web platform is not supported due to lack of raw UDP/TCP socket access
-- The app currently uses AES-256 CBC encryption, but Phase 1 will upgrade to X25519 + AES-GCM for proper E2E encryption
+- Messages use X25519 ECDH → HKDF → AES-256-GCM (see `CryptoService`). Keys are static per device, so there is no per-message forward secrecy yet. Peer keys are pinned trust-on-first-use, so an active MITM at first contact is still possible until out-of-band verification is added.
 - Android permissions are configured, iOS local-network permission needs verification
 - All services follow singleton pattern with `instance` getter

@@ -1,11 +1,29 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 import 'package:kylan_connect/models/discovery_packet.dart';
 import 'package:kylan_connect/models/peer_device.dart';
 import 'package:kylan_connect/services/discovery_service.dart';
+import 'package:kylan_connect/services/storage_service.dart';
 
 void main() {
   late DiscoveryService discoveryService;
+  late Directory tempDir;
+
+  setUpAll(() async {
+    // Discovery now ensures the device's X25519 keypair on init, which needs
+    // an initialized Hive keys box.
+    tempDir = Directory.systemTemp.createTempSync('kylan_disc_test');
+    await StorageService.instance.initializeForTest(tempDir.path);
+  });
+
+  tearDownAll(() async {
+    await Hive.close();
+    if (tempDir.existsSync()) {
+      tempDir.deleteSync(recursive: true);
+    }
+  });
 
   setUp(() async {
     discoveryService = DiscoveryService.instance;

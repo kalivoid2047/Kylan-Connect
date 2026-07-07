@@ -1,6 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import '../core/constants/app_constants.dart';
-import '../core/security/encryption_service.dart';
+import '../core/security/crypto_service.dart';
 import '../core/errors/exceptions.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';
@@ -108,11 +109,14 @@ class MessagingService {
     // Mark this peer so the reconnect timer keeps the connection alive.
     ConnectionManager.instance.registerIntendedPeer(ipAddress);
 
-    // Derive a shared key — computed identically on both devices.
-    final key = EncryptionService.instance
-        .getConversationKey(_currentUserId!, receiverId);
-    final encryptedData =
-        EncryptionService.instance.encryptJsonWithKey(message.toJson(), key);
+    // Seal the message with AES-GCM under the X25519-derived session key.
+    // Requires the peer's public key to have been pinned via discovery.
+    if (!CryptoService.instance.canEncryptFor(receiverId)) {
+      throw MessagingException(
+          'No public key for peer $receiverId — cannot encrypt message');
+    }
+    final encryptedData = await CryptoService.instance
+        .encryptFor(receiverId, jsonEncode(message.toJson()));
 
     final packet = MessagePacket(
       id: message.id,
@@ -149,7 +153,7 @@ class MessagingService {
     throw lastError!;
   }
 
-  void _handleIncomingPacket(MessagePacket packet) {
+  Future<void> _handleIncomingPacket(MessagePacket packet) async {
     try {
       final encryptedData = packet.payload['encrypted'] as String?;
       if (encryptedData == null) {
@@ -157,11 +161,17 @@ class MessagingService {
         return;
       }
 
-      // Derive the same shared key the sender used.
-      final key = EncryptionService.instance
-          .getConversationKey(_currentUserId!, packet.senderId);
-      final decryptedJson =
-          EncryptionService.instance.decryptJsonWithKey(encryptedData, key);
+      if (!CryptoService.instance.canEncryptFor(packet.senderId)) {
+        AppLogger.instance.warning(
+            'No public key for sender ${packet.senderId} — cannot decrypt');
+        return;
+      }
+
+      // Decrypt with the AES-GCM session key derived from the sender's pinned
+      // public key. AES-GCM also authenticates the message.
+      final decryptedString = await CryptoService.instance
+          .decryptFrom(packet.senderId, encryptedData);
+      final decryptedJson = jsonDecode(decryptedString) as Map<String, dynamic>;
 
       final message = Message.fromJson(decryptedJson);
 
@@ -317,11 +327,15 @@ class MessagingService {
       return;
     }
 
+    if (!CryptoService.instance.canEncryptFor(receiverId)) {
+      AppLogger.instance.debug(
+          'No public key for $receiverId — skipping ${controlMessage.type} control message');
+      return;
+    }
+
     try {
-      final key = EncryptionService.instance
-          .getConversationKey(_currentUserId!, receiverId);
-      final encryptedData = EncryptionService.instance
-          .encryptJsonWithKey(controlMessage.toJson(), key);
+      final encryptedData = await CryptoService.instance
+          .encryptFor(receiverId, jsonEncode(controlMessage.toJson()));
 
       final packet = MessagePacket(
         id: controlMessage.id,

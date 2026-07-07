@@ -1,7 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 import 'package:kylan_connect/services/discovery_service.dart';
 import 'package:kylan_connect/services/connection_manager.dart';
 import 'package:kylan_connect/services/messaging_service.dart';
+import 'package:kylan_connect/services/storage_service.dart';
 import 'package:kylan_connect/models/message.dart';
 import 'package:kylan_connect/core/constants/app_constants.dart';
 
@@ -13,6 +17,20 @@ void main() {
   late ConnectionManager connectionManager1;
   late MessagingService messagingService1;
   late MessagingService messagingService2;
+  late Directory tempDir;
+
+  setUpAll(() async {
+    // Peer services now ensure an X25519 keypair on init, backed by Hive.
+    tempDir = Directory.systemTemp.createTempSync('kylan_two_instance_test');
+    await StorageService.instance.initializeForTest(tempDir.path);
+  });
+
+  tearDownAll(() async {
+    await Hive.close();
+    if (tempDir.existsSync()) {
+      tempDir.deleteSync(recursive: true);
+    }
+  });
 
   setUp(() {
     discoveryService1 = DiscoveryService.instance;

@@ -6,7 +6,7 @@ A production-ready offline peer-to-peer messaging platform that enables direct c
 
 - **Device Discovery**: Automatic peer discovery using UDP broadcasting
 - **Direct Messaging**: Real-time P2P communication via TCP sockets
-- **End-to-End Encryption**: AES-256 encryption for all communications
+- **End-to-End Encryption**: X25519 key agreement + AES-256-GCM authenticated encryption
 - **Offline-First**: No internet dependency, works entirely on local networks
 - **Modern UI**: Material 3 design with light/dark theme support
 - **Local Storage**: Persistent chat history using Hive
@@ -105,7 +105,7 @@ Messages are sent via **TCP sockets** for reliable delivery:
 
 - **Protocol**: TCP
 - **Port**: 54322
-- **Encryption**: AES-256
+- **Encryption**: X25519 + AES-256-GCM (see Encryption Design below)
 - **Connection Management**: Automatic reconnection handling
 
 #### Message Protocol
@@ -135,20 +135,27 @@ The message protocol is designed to be **future-proof**, supporting multiple con
 
 ## Encryption Design
 
-All communications are encrypted using **AES-256**:
+Messages are end-to-end encrypted using **X25519 ECDH + AES-256-GCM**:
 
-- **Algorithm**: AES
-- **Key Length**: 256 bits
-- **Mode**: CBC with random IV
-- **Implementation**: `encrypt` package
+- **Identity**: each device holds a long-lived X25519 keypair (private key persisted in Hive)
+- **Key agreement**: non-interactive ECDH — each peer broadcasts its public key in discovery, and both derive the same shared secret from their own private key plus the other's public key
+- **Key derivation**: HKDF-SHA256 over the shared secret (salted with a sorted hash of both public keys)
+- **Cipher**: AES-256-GCM (authenticated encryption — detects tampering)
+- **Trust**: peer public keys are pinned on first sighting (TOFU); a later key change is flagged as a possible spoof/MITM
+- **Implementation**: `cryptography` package (`CryptoService`)
 
 ### Encryption Flow
 
-1. Message is created with payload
-2. Message is serialized to JSON
-3. JSON is encrypted using AES-256
-4. Encrypted data is wrapped in message packet
-5. Packet is sent via TCP
+1. Message is created with payload and serialized to JSON
+2. The session key is derived from the peer's pinned public key (ECDH + HKDF)
+3. JSON is sealed with AES-256-GCM (random nonce per message)
+4. `base64(nonce | ciphertext | tag)` is wrapped in the message packet
+5. Packet is sent via TCP; the receiver derives the same key and decrypts
+
+> **Limitation**: keys are static per device, so there is no per-message forward
+> secrecy yet, and TOFU cannot stop an active MITM at first contact. A future
+> ephemeral-key handshake and out-of-band safety-number verification would close
+> these gaps.
 
 ## State Management
 
@@ -216,12 +223,12 @@ Handles message sending/receiving:
 - `getMessages()`: Get conversation messages
 - `markAsRead()`: Mark conversation as read
 
-### EncryptionService
-Provides encryption/decryption:
-- `encrypt()`: Encrypt data
-- `decrypt()`: Decrypt data
-- `encryptJson()`: Encrypt JSON object
-- `decryptJson()`: Decrypt JSON object
+### CryptoService
+Provides end-to-end encryption (X25519 + AES-256-GCM):
+- `ensureIdentityKeys()`: Load or generate the device's X25519 keypair
+- `pinPeerPublicKey()`: Pin a peer's public key (trust-on-first-use)
+- `encryptFor()` / `decryptFrom()`: Seal/open a message for a peer
+- `canEncryptFor()`: Whether a peer's key is known
 
 ### StorageService
 Manages local data persistence:
@@ -328,7 +335,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - Flutter team for the amazing framework
 - Riverpod for state management
 - Hive for local storage
-- encrypt package for encryption
+- cryptography package for encryption
 
 ## Contact
 

@@ -19,6 +19,7 @@ class StorageService {
   late Box<dynamic> _messagesBox;
   late Box<PeerDevice> _peersBox;
   late Box<AppSettings> _settingsBox;
+  late Box<String> _keysBox;
 
   bool _isInitialized = false;
 
@@ -47,6 +48,7 @@ class StorageService {
       _peersBox = await Hive.openBox<PeerDevice>(StorageConstants.peersBox);
       _settingsBox =
           await Hive.openBox<AppSettings>(StorageConstants.settingsBox);
+      _keysBox = await Hive.openBox<String>(StorageConstants.keysBox);
 
       _isInitialized = true;
       AppLogger.instance.info('Storage service initialized successfully');
@@ -75,6 +77,7 @@ class StorageService {
     _peersBox = await Hive.openBox<PeerDevice>(StorageConstants.peersBox);
     _settingsBox =
         await Hive.openBox<AppSettings>(StorageConstants.settingsBox);
+    _keysBox = await Hive.openBox<String>(StorageConstants.keysBox);
 
     _isInitialized = true;
   }
@@ -357,6 +360,41 @@ class StorageService {
       throw StorageException('Failed to clear offline queue for peer', e);
     }
   }
+
+  // Cryptographic Key Operations
+  /// Persists this device's X25519 identity keypair (base64-encoded).
+  Future<void> saveDeviceKeys(
+      String privateKeyBase64, String publicKeyBase64) async {
+    try {
+      await _keysBox.put(
+          StorageConstants.devicePrivateKeyKey, privateKeyBase64);
+      await _keysBox.put(StorageConstants.devicePublicKeyKey, publicKeyBase64);
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to save device keys', e, stackTrace);
+      throw StorageException('Failed to save device keys', e);
+    }
+  }
+
+  String? getDevicePrivateKey() =>
+      _keysBox.get(StorageConstants.devicePrivateKeyKey);
+
+  String? getDevicePublicKey() =>
+      _keysBox.get(StorageConstants.devicePublicKeyKey);
+
+  /// Pins a peer's public key (base64) so future key changes can be detected.
+  void pinPeerPublicKey(String peerDeviceId, String publicKeyBase64) {
+    try {
+      _keysBox.put(
+          '${StorageConstants.pinnedPeerKeyPrefix}$peerDeviceId',
+          publicKeyBase64);
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to pin peer public key', e, stackTrace);
+    }
+  }
+
+  String? getPinnedPeerPublicKey(String peerDeviceId) =>
+      _keysBox.get('${StorageConstants.pinnedPeerKeyPrefix}$peerDeviceId');
 
   // Peer Device Operations
   Future<void> savePeer(PeerDevice peer) async {
