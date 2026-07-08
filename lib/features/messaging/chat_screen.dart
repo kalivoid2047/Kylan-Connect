@@ -24,6 +24,7 @@ import '../../services/discovery_service.dart';
 import '../../services/file_service.dart';
 import '../../services/image_service.dart';
 import '../../services/messaging_service.dart';
+import '../../services/notification_service.dart';
 import '../../services/typing_service.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -108,7 +109,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _loadArguments();
       _didLoadArguments = true;
       _loadMessages();
-      // Mark conversation as read when the screen opens.
+      // Mark conversation as read when the screen opens, and suppress OS
+      // notifications for the peer whose chat is now on screen.
+      NotificationService.instance.setActiveConversation(_participantId);
       if (_conversationId.isNotEmpty) {
         ChatRepository.instance.markAsRead(_conversationId);
       }
@@ -117,6 +120,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
+    NotificationService.instance.setActiveConversation(null);
     _messageSubscription?.cancel();
     _statusSubscription?.cancel();
     _typingStartedSubscription?.cancel();

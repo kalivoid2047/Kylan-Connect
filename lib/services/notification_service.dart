@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart'
+    hide Message;
 import '../models/message.dart';
 import '../models/peer_device.dart';
 import '../core/utils/app_logger.dart';
@@ -36,6 +38,17 @@ class NotificationService {
       StreamController.broadcast();
   final List<AppNotification> _notifications = [];
 
+  final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
+  bool _systemReady = false;
+
+  /// The peer whose chat is currently open. Incoming messages from this peer
+  /// don't raise an OS notification (the user is already looking at them).
+  String? _activePeerId;
+
+  static const String _messagesChannelId = 'messages';
+  static const String _messagesChannelName = 'Messages';
+
   bool _isEnabled = true;
 
   NotificationService._internal();
@@ -50,20 +63,105 @@ class NotificationService {
         .info('Notifications ${enabled ? "enabled" : "disabled"}');
   }
 
+  /// Marks which conversation is on screen so we can suppress its OS
+  /// notifications. Pass null when leaving a chat.
+  void setActiveConversation(String? peerId) => _activePeerId = peerId;
+
+  /// Initializes the platform notification plugin and requests permission.
+  /// Safe to call on platforms without support — it degrades to in-app only.
+  Future<void> initialize() async {
+    if (_systemReady) return;
+    try {
+      const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const darwin = DarwinInitializationSettings();
+      const linux =
+          LinuxInitializationSettings(defaultActionName: 'Open');
+      const settings = InitializationSettings(
+        android: android,
+        iOS: darwin,
+        macOS: darwin,
+        linux: linux,
+      );
+      await _plugin.initialize(settings);
+
+      final android_ = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await android_?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          _messagesChannelId,
+          _messagesChannelName,
+          description: 'New message notifications',
+          importance: Importance.high,
+        ),
+      );
+      await android_?.requestNotificationsPermission();
+
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>()
+          ?.requestPermissions(alert: true, badge: true, sound: true);
+
+      _systemReady = true;
+      AppLogger.instance.info('Local notifications initialized');
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .warning('Local notifications unavailable on this platform: $e');
+      AppLogger.instance.debug('Notification init error: $stackTrace');
+    }
+  }
+
   void showNewMessageNotification(Message message, String senderName) {
     if (!_isEnabled) return;
+
+    final preview = _previewFor(message);
 
     final notification = AppNotification(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       type: NotificationType.newMessage,
       title: senderName,
-      body: message.textContent ?? '',
+      body: preview,
       timestamp: DateTime.now(),
       data: {'messageId': message.id, 'senderId': message.senderId},
     );
 
     _addNotification(notification);
     AppLogger.instance.debug('New message notification: $senderName');
+
+    // Raise an OS notification unless the user is already viewing this chat.
+    if (message.senderId != _activePeerId) {
+      unawaited(_showSystemNotification(
+        message.senderId.hashCode & 0x7fffffff,
+        senderName,
+        preview,
+      ));
+    }
+  }
+
+  /// A short preview of a message for notification/list display.
+  String _previewFor(Message message) {
+    if (message.isImage) return '📷 Photo';
+    if (message.isVoice) return '🎤 Voice message';
+    if (message.isFile) return '📎 ${message.attachmentName ?? 'File'}';
+    return message.textContent ?? '';
+  }
+
+  Future<void> _showSystemNotification(int id, String title, String body) async {
+    if (!_systemReady) return;
+    try {
+      const details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          _messagesChannelId,
+          _messagesChannelName,
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+        macOS: DarwinNotificationDetails(),
+      );
+      await _plugin.show(id, title, body, details);
+    } catch (e) {
+      AppLogger.instance.debug('Failed to show system notification: $e');
+    }
   }
 
   void showDeviceJoinedNotification(PeerDevice peer) {

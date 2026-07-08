@@ -6,6 +6,7 @@ import 'background_service.dart';
 import 'connection_manager.dart';
 import 'discovery_service.dart';
 import 'messaging_service.dart';
+import 'notification_service.dart';
 import 'storage_service.dart';
 
 class AppStartupService {
@@ -20,6 +21,7 @@ class AppStartupService {
     if (_isInitialized) return;
 
     await StorageService.instance.initialize();
+    await NotificationService.instance.initialize();
 
     final profile = await ProfileRepository.instance.getProfile();
     if (profile != null) {
