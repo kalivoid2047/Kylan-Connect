@@ -11,20 +11,22 @@ import '../models/message.dart';
 import '../models/message_packet.dart';
 import '../services/connection_manager.dart';
 import '../services/discovery_service.dart';
+import '../services/file_service.dart';
 import '../services/image_service.dart';
 import '../services/notification_service.dart';
 import '../services/storage_service.dart';
 import '../services/typing_service.dart';
 import '../core/utils/app_logger.dart';
 
-/// Reassembly state for an image arriving in chunks.
-class _IncomingImageTransfer {
+/// Reassembly state for an attachment (image or file) arriving in chunks.
+class _IncomingTransfer {
   final String senderId;
+  final bool isImage;
   String? fileName;
   int? total;
   final Map<int, Uint8List> chunks = {};
 
-  _IncomingImageTransfer(this.senderId);
+  _IncomingTransfer(this.senderId, {required this.isImage});
 }
 
 class MessagingService {
@@ -36,14 +38,14 @@ class MessagingService {
   final StreamController<Message> _messageStatusController =
       StreamController.broadcast();
 
-  /// Emits a transferId when a full image has finished downloading to disk so
-  /// the chat can refresh and show/enable the full-resolution image.
-  final StreamController<String> _imageReadyController =
+  /// Emits a transferId when an attachment has finished downloading to disk so
+  /// the chat can refresh and show/enable the full file.
+  final StreamController<String> _transferReadyController =
       StreamController.broadcast();
   StreamSubscription<MessagePacket>? _connectionSubscription;
 
-  /// In-flight incoming image transfers, keyed by transferId.
-  final Map<String, _IncomingImageTransfer> _incomingTransfers = {};
+  /// In-flight incoming attachment transfers, keyed by transferId.
+  final Map<String, _IncomingTransfer> _incomingTransfers = {};
 
   String? _currentUserId;
   bool _isInitialized = false;
@@ -52,7 +54,7 @@ class MessagingService {
 
   Stream<Message> get onMessageReceived => _messageReceivedController.stream;
   Stream<Message> get onMessageStatusChanged => _messageStatusController.stream;
-  Stream<String> get onImageReady => _imageReadyController.stream;
+  Stream<String> get onTransferReady => _transferReadyController.stream;
   bool get isInitialized => _isInitialized;
 
   Future<void> initialize(String userId) async {
@@ -179,7 +181,7 @@ class MessagingService {
 
       // Send the bubble (thumbnail + metadata) first, then the chunks.
       await _sendToPeer(receiverIp, message, receiverId);
-      await _sendImageChunks(receiverId, receiverIp, transferId, bytes);
+      await _sendTransferChunks(receiverId, receiverIp, transferId, bytes);
 
       final sent = message.copyWith(status: AppConstants.messageStatusSent);
       await StorageService.instance.updateMessageStatus(
@@ -197,12 +199,73 @@ class MessagingService {
     }
   }
 
-  Future<void> _sendImageChunks(String receiverId, String receiverIp,
+  /// Sends an arbitrary file: persists a bubble carrying only metadata, then
+  /// streams the bytes to the peer in encrypted chunks. The file is written to
+  /// the sender's own disk too, so it can be reopened.
+  Future<Message> sendFile({
+    required String receiverId,
+    required String receiverIp,
+    required File file,
+  }) async {
+    if (!_isInitialized) {
+      throw const MessagingException('Messaging service not initialized');
+    }
+    if (!CryptoService.instance.canEncryptFor(receiverId)) {
+      throw const MessagingException(
+          'No public key for peer — cannot send file');
+    }
+
+    final bytes = await file.readAsBytes();
+    final transferId = const Uuid().v4();
+    final fileName = file.path.split(RegExp(r'[/\\]')).last;
+
+    // Keep our own copy on disk so the sender can reopen the file.
+    await FileService.instance.saveBytes(transferId, fileName, bytes);
+
+    final message = Message.createFileMessage(
+      senderId: _currentUserId!,
+      receiverId: receiverId,
+      transferId: transferId,
+      fileName: fileName,
+      fileSize: bytes.length,
+    );
+    final conversationId =
+        Conversation.generateConversationId(_currentUserId!, receiverId);
+
+    try {
+      await StorageService.instance.saveMessage(conversationId, message);
+      await _updateConversation(
+        peerId: receiverId,
+        peerIp: receiverIp,
+        lastMessage: '📎 $fileName',
+        isIncoming: false,
+      );
+
+      await _sendToPeer(receiverIp, message, receiverId);
+      await _sendTransferChunks(receiverId, receiverIp, transferId, bytes);
+
+      final sent = message.copyWith(status: AppConstants.messageStatusSent);
+      await StorageService.instance.updateMessageStatus(
+          conversationId, message.id, AppConstants.messageStatusSent);
+      _messageStatusController.add(sent);
+      AppLogger.instance.info('File sent to $receiverId: $transferId');
+      return sent;
+    } catch (e, stackTrace) {
+      await StorageService.instance.updateMessageStatus(
+          conversationId, message.id, AppConstants.messageStatusFailed);
+      _messageStatusController
+          .add(message.copyWith(status: AppConstants.messageStatusFailed));
+      AppLogger.instance.error('Failed to send file', e, stackTrace);
+      throw MessagingException('Failed to send file', e);
+    }
+  }
+
+  Future<void> _sendTransferChunks(String receiverId, String receiverIp,
       String transferId, List<int> bytes) async {
     final chunks =
-        ImageService.splitIntoChunks(bytes, AppConstants.imageChunkSize);
+        FileService.splitIntoChunks(bytes, AppConstants.transferChunkSize);
     for (var i = 0; i < chunks.length; i++) {
-      final chunkMessage = Message.createImageChunk(
+      final chunkMessage = Message.createFileChunk(
         senderId: _currentUserId!,
         receiverId: receiverId,
         transferId: transferId,
@@ -213,7 +276,7 @@ class MessagingService {
       await _sendControlMessage(chunkMessage, receiverId, receiverIp);
     }
     AppLogger.instance
-        .debug('Sent ${chunks.length} image chunks for $transferId');
+        .debug('Sent ${chunks.length} chunks for $transferId');
   }
 
   Future<void> _sendToPeer(
@@ -298,12 +361,12 @@ class MessagingService {
       // the indicator doesn't linger until its timeout.
       TypingService.instance.clearTyping(message.senderId);
 
-      // An image bubble arrives before its chunks — register the transfer so
-      // the chunks that follow can be matched and reassembled.
-      if (message.isImage && message.imageTransferId != null) {
-        _incomingTransfers[message.imageTransferId!] =
-            _IncomingImageTransfer(message.senderId)
-              ..fileName = message.imageFileName;
+      // An attachment bubble arrives before its chunks — register the transfer
+      // so the chunks that follow can be matched and reassembled.
+      if (message.isAttachment && message.transferId != null) {
+        _incomingTransfers[message.transferId!] =
+            _IncomingTransfer(message.senderId, isImage: message.isImage)
+              ..fileName = message.attachmentName;
       }
 
       final deliveredMessage =
@@ -320,7 +383,7 @@ class MessagingService {
       _updateConversation(
         peerId: message.senderId,
         peerIp: peerIp,
-        lastMessage: message.isImage ? '📷 Photo' : (message.textContent ?? ''),
+        lastMessage: _conversationPreview(message),
         isIncoming: true,
       );
 
@@ -365,8 +428,8 @@ class MessagingService {
         // Receive side of typing indicators; send side lives in TypingService.
         TypingService.instance.handleTypingIndicator(message);
         break;
-      case AppConstants.messageTypeImageChunk:
-        _handleImageChunk(message);
+      case AppConstants.messageTypeFileChunk:
+        _handleTransferChunk(message);
         break;
       default:
         AppLogger.instance
@@ -374,9 +437,16 @@ class MessagingService {
     }
   }
 
-  /// Accumulates one chunk of an incoming image; once every chunk has arrived,
-  /// reassembles the bytes, writes them to disk, and notifies listeners.
-  Future<void> _handleImageChunk(Message message) async {
+  /// The conversation-list preview text for a message.
+  String _conversationPreview(Message message) {
+    if (message.isImage) return '📷 Photo';
+    if (message.isFile) return '📎 ${message.attachmentName ?? 'File'}';
+    return message.textContent ?? '';
+  }
+
+  /// Accumulates one chunk of an incoming attachment; once every chunk has
+  /// arrived, reassembles the bytes, writes them to disk, and notifies listeners.
+  Future<void> _handleTransferChunk(Message message) async {
     try {
       final transferId = message.payload['transferId'] as String?;
       final index = (message.payload['index'] as num?)?.toInt();
@@ -388,16 +458,20 @@ class MessagingService {
 
       // Guard against an oversized transfer exhausting memory.
       final maxChunks =
-          (AppConstants.maxImageBytes / AppConstants.imageChunkSize).ceil() + 1;
+          (AppConstants.maxTransferBytes / AppConstants.transferChunkSize)
+                  .ceil() +
+              1;
       if (total > maxChunks) {
         AppLogger.instance
-            .warning('Rejecting image transfer $transferId: too large');
+            .warning('Rejecting transfer $transferId: too large');
         _incomingTransfers.remove(transferId);
         return;
       }
 
-      final transfer = _incomingTransfers.putIfAbsent(
-          transferId, () => _IncomingImageTransfer(message.senderId));
+      // Chunks should only ever arrive after the bubble registered the
+      // transfer; if not (unexpected), default to treating it as a file.
+      final transfer = _incomingTransfers.putIfAbsent(transferId,
+          () => _IncomingTransfer(message.senderId, isImage: false));
       transfer.total = total;
       transfer.chunks[index] = base64.decode(data);
 
@@ -408,15 +482,20 @@ class MessagingService {
       final ordered = [
         for (var i = 0; i < total; i++) transfer.chunks[i] ?? Uint8List(0)
       ];
-      final bytes = ImageService.reassembleChunks(ordered);
-      await ImageService.instance
-          .saveImageBytes(transferId, transfer.fileName!, bytes);
+      final bytes = FileService.reassembleChunks(ordered);
+      if (transfer.isImage) {
+        await ImageService.instance
+            .saveImageBytes(transferId, transfer.fileName!, bytes);
+      } else {
+        await FileService.instance
+            .saveBytes(transferId, transfer.fileName!, bytes);
+      }
       _incomingTransfers.remove(transferId);
 
-      _imageReadyController.add(transferId);
-      AppLogger.instance.info('Image transfer complete: $transferId');
+      _transferReadyController.add(transferId);
+      AppLogger.instance.info('Transfer complete: $transferId');
     } catch (e, stackTrace) {
-      AppLogger.instance.error('Failed to handle image chunk', e, stackTrace);
+      AppLogger.instance.error('Failed to handle transfer chunk', e, stackTrace);
     }
   }
 
@@ -709,6 +788,6 @@ class MessagingService {
     _connectionSubscription?.cancel();
     _messageReceivedController.close();
     _messageStatusController.close();
-    _imageReadyController.close();
+    _transferReadyController.close();
   }
 }

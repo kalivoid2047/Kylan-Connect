@@ -159,9 +159,33 @@ class Message {
     );
   }
 
-  /// A single chunk of an image transfer. Ephemeral — routed and reassembled,
-  /// never persisted.
-  static Message createImageChunk({
+  /// A file message. Like an image, the bytes are streamed separately in chunks
+  /// and written to disk; the payload only carries metadata.
+  static Message createFileMessage({
+    required String senderId,
+    required String receiverId,
+    required String transferId,
+    required String fileName,
+    required int fileSize,
+  }) {
+    return Message(
+      id: const Uuid().v4(),
+      type: AppConstants.messageTypeFile,
+      senderId: senderId,
+      receiverId: receiverId,
+      payload: {
+        'transferId': transferId,
+        'fileName': fileName,
+        'fileSize': fileSize,
+      },
+      timestamp: DateTime.now(),
+      status: AppConstants.messageStatusSending,
+    );
+  }
+
+  /// A single chunk of a binary transfer (image or file). Ephemeral — routed
+  /// and reassembled, never persisted.
+  static Message createFileChunk({
     required String senderId,
     required String receiverId,
     required String transferId,
@@ -171,7 +195,7 @@ class Message {
   }) {
     return Message(
       id: const Uuid().v4(),
-      type: AppConstants.messageTypeImageChunk,
+      type: AppConstants.messageTypeFileChunk,
       senderId: senderId,
       receiverId: receiverId,
       payload: {
@@ -188,12 +212,16 @@ class Message {
   String? get textContent => payload['message'] as String?;
   String? get originalMessageId => payload['originalMessageId'] as String?;
 
-  // Image accessors
+  // Transfer accessors shared by image and file messages.
   bool get isImage => type == AppConstants.messageTypeImage;
-  String? get imageTransferId => payload['transferId'] as String?;
+  bool get isFile => type == AppConstants.messageTypeFile;
+  bool get isAttachment => isImage || isFile;
+  String? get transferId => payload['transferId'] as String?;
+  String? get attachmentName => payload['fileName'] as String?;
+  int get attachmentSize => (payload['fileSize'] as num?)?.toInt() ?? 0;
+
+  // Image-specific accessors.
   String? get thumbnailBase64 => payload['thumbnail'] as String?;
-  String? get imageFileName => payload['fileName'] as String?;
-  int get imageFileSize => (payload['fileSize'] as num?)?.toInt() ?? 0;
   int get imageWidth => (payload['width'] as num?)?.toInt() ?? 0;
   int get imageHeight => (payload['height'] as num?)?.toInt() ?? 0;
 
@@ -201,5 +229,5 @@ class Message {
       type == AppConstants.messageTypeDeliveryAck ||
       type == AppConstants.messageTypeReadReceipt ||
       type == AppConstants.messageTypeTyping ||
-      type == AppConstants.messageTypeImageChunk;
+      type == AppConstants.messageTypeFileChunk;
 }

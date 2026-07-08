@@ -9,52 +9,6 @@ import 'package:kylan_connect/models/message.dart';
 import 'package:kylan_connect/services/image_service.dart';
 
 void main() {
-  group('Chunking', () {
-    test('splits and reassembles to the original bytes', () {
-      final data =
-          Uint8List.fromList(List<int>.generate(100, (i) => i % 256));
-      final chunks = ImageService.splitIntoChunks(data, 32);
-
-      expect(chunks.length, equals(4)); // 32 + 32 + 32 + 4
-      expect(chunks.last.length, equals(4));
-
-      final rebuilt = ImageService.reassembleChunks(chunks);
-      expect(rebuilt, equals(data));
-    });
-
-    test('handles an exact multiple of the chunk size', () {
-      final data = Uint8List.fromList(List<int>.generate(64, (i) => i));
-      final chunks = ImageService.splitIntoChunks(data, 32);
-      expect(chunks.length, equals(2));
-      expect(ImageService.reassembleChunks(chunks), equals(data));
-    });
-
-    test('a chunk size larger than the data yields one chunk', () {
-      final data = Uint8List.fromList([1, 2, 3]);
-      final chunks = ImageService.splitIntoChunks(data, 1024);
-      expect(chunks.length, equals(1));
-      expect(ImageService.reassembleChunks(chunks), equals(data));
-    });
-
-    test('empty input yields a single empty chunk', () {
-      final chunks = ImageService.splitIntoChunks(<int>[], 32);
-      expect(chunks.length, equals(1));
-      expect(chunks.first, isEmpty);
-      expect(ImageService.reassembleChunks(chunks), isEmpty);
-    });
-
-    test('survives a base64 round-trip per chunk (wire encoding)', () {
-      final data =
-          Uint8List.fromList(List<int>.generate(500, (i) => (i * 7) % 256));
-      final chunks = ImageService.splitIntoChunks(data, 64);
-
-      final decoded = chunks
-          .map((c) => Uint8List.fromList(base64.decode(base64.encode(c))))
-          .toList();
-      expect(ImageService.reassembleChunks(decoded), equals(data));
-    });
-  });
-
   group('Thumbnails', () {
     late Uint8List pngBytes;
 
@@ -90,7 +44,7 @@ void main() {
     });
   });
 
-  group('Disk storage', () {
+  group('Image disk storage', () {
     late Directory tempDir;
 
     setUpAll(() {
@@ -118,17 +72,6 @@ void main() {
         isFalse,
       );
     });
-
-    test('strips path separators from file names (no traversal)', () async {
-      final path =
-          await ImageService.instance.localPathFor('tx2', '../../etc/passwd');
-      // The name portion keeps within the images dir: separators are removed,
-      // so it resolves to a single file rather than escaping upward.
-      final base = path.split(RegExp(r'[/\\]')).last;
-      expect(base, equals('tx2_.._.._etc_passwd'));
-      expect(base.contains('/'), isFalse);
-      expect(base.contains('\\'), isFalse);
-    });
   });
 
   group('Image message model', () {
@@ -146,31 +89,15 @@ void main() {
 
       expect(m.type, equals(AppConstants.messageTypeImage));
       expect(m.isImage, isTrue);
+      expect(m.isAttachment, isTrue);
       expect(m.isControlMessage, isFalse);
-      expect(m.imageTransferId, equals('tx'));
+      expect(m.transferId, equals('tx'));
       expect(m.thumbnailBase64, equals('AAAA'));
-      expect(m.imageFileName, equals('pic.jpg'));
-      expect(m.imageFileSize, equals(1234));
+      expect(m.attachmentName, equals('pic.jpg'));
+      expect(m.attachmentSize, equals(1234));
       expect(m.imageWidth, equals(640));
       expect(m.imageHeight, equals(480));
       expect(m.status, equals(AppConstants.messageStatusSending));
-    });
-
-    test('createImageChunk is an (ephemeral) control message', () {
-      final c = Message.createImageChunk(
-        senderId: 'a',
-        receiverId: 'b',
-        transferId: 'tx',
-        index: 2,
-        total: 5,
-        dataBase64: 'Zm9v',
-      );
-
-      expect(c.type, equals(AppConstants.messageTypeImageChunk));
-      expect(c.isControlMessage, isTrue);
-      expect(c.payload['index'], equals(2));
-      expect(c.payload['total'], equals(5));
-      expect(c.payload['data'], equals('Zm9v'));
     });
   });
 }

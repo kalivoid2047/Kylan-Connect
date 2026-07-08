@@ -102,33 +102,4 @@ class ImageService {
       return (width: 0, height: 0);
     }
   }
-
-  // ---- Pure chunk helpers (unit-tested) ----
-
-  /// Splits [bytes] into consecutive chunks of at most [chunkSize] bytes.
-  static List<Uint8List> splitIntoChunks(List<int> bytes, int chunkSize) {
-    assert(chunkSize > 0);
-    final data = Uint8List.fromList(bytes);
-    final chunks = <Uint8List>[];
-    for (var offset = 0; offset < data.length; offset += chunkSize) {
-      final end =
-          (offset + chunkSize) < data.length ? offset + chunkSize : data.length;
-      chunks.add(Uint8List.sublistView(data, offset, end));
-    }
-    // An empty input still yields a single empty chunk so `total` is never 0.
-    if (chunks.isEmpty) chunks.add(Uint8List(0));
-    return chunks;
-  }
-
-  /// Concatenates [chunks] (already in index order) back into the full bytes.
-  static Uint8List reassembleChunks(List<Uint8List> chunks) {
-    final total = chunks.fold<int>(0, (sum, c) => sum + c.length);
-    final out = Uint8List(total);
-    var offset = 0;
-    for (final chunk in chunks) {
-      out.setRange(offset, offset + chunk.length, chunk);
-      offset += chunk.length;
-    }
-    return out;
-  }
 }

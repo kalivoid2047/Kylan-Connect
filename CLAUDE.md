@@ -41,8 +41,8 @@ Kylan Connect is a production-ready offline peer-to-peer messaging platform that
 **Ordered easiest → hardest, each exercising the protocol's type system:**
 
 - ✅ Typing indicators (pure control packet, no storage). Encrypted `typing` control message; `MessagingService.sendTypingIndicator` sends, `TypingService` tracks who's typing (receive-only, 4s auto-expiry), chat screen throttles sends (2s) and shows "typing…" in the app-bar subtitle.
-- ✅ Image sharing. `MessagingService.sendImage` persists a bubble carrying only a base64 thumbnail + metadata (in Hive), then streams the full image as encrypted `image_chunk` control messages (32KB chunks) over the existing TCP channel; the receiver reassembles and writes the file to disk (`ImageService`, deterministic `transferId_fileName` path under app docs/images). Chat renders the thumbnail with a full-screen pinch-zoom viewer on tap. Uses image_picker (gallery) + the image package (thumbnails).
-- File sharing (generalizes the image pipeline)
+- ✅ Image sharing. `MessagingService.sendImage` persists a bubble carrying only a base64 thumbnail + metadata (in Hive), then streams the full image as encrypted `file_chunk` control messages (32KB chunks) over the existing TCP channel; the receiver reassembles and writes the file to disk (`ImageService`, deterministic `transferId_fileName` path under app docs/images). Chat renders the thumbnail with a full-screen pinch-zoom viewer on tap. Uses image_picker (gallery) + the image package (thumbnails).
+- ✅ File sharing. Generalizes the image pipeline: a shared, unified transfer core streams `file_chunk` control messages for both images and files. `MessagingService.sendFile` persists a `file` bubble (name + size metadata) and streams the bytes; the receiver reassembles via `FileService` (app docs/files, same deterministic path scheme). Chat shows a file-card bubble that opens with the OS default app on tap (open_filex); file picked via file_picker. The generic chunk/reassemble helpers live in `FileService`; `ImageService` keeps thumbnail/dimension logic.
 - Voice messages (recording UI + the file pipeline)
 - OS-level notifications via flutter_local_notifications so backgrounded devices actually alert
 
@@ -105,7 +105,7 @@ Provides end-to-end encryption (X25519 + AES-256-GCM):
 ```json
 {
   "id": "uuid",
-  "type": "text|image|voice|file|typing|delivery_ack|read_receipt|image_chunk",
+  "type": "text|image|voice|file|typing|delivery_ack|read_receipt|file_chunk",
   "senderId": "uuid",
   "receiverId": "uuid",
   "timestamp": "iso-date",

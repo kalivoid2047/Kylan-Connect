@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:open_filex/open_filex.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/validators.dart';
 import '../../core/utils/extensions.dart';
@@ -15,6 +17,7 @@ import '../../repositories/chat_repository.dart';
 import '../../repositories/peer_repository.dart';
 import '../../services/app_startup_service.dart';
 import '../../services/discovery_service.dart';
+import '../../services/file_service.dart';
 import '../../services/image_service.dart';
 import '../../services/messaging_service.dart';
 import '../../services/typing_service.dart';
@@ -77,9 +80,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     });
 
-    // A finished image download means a bubble can now show the full image.
+    // A finished attachment download means a bubble can now show the full file.
     _imageReadySubscription =
-        MessagingService.instance.onImageReady.listen((_) {
+        MessagingService.instance.onTransferReady.listen((_) {
       if (mounted) _loadMessages();
     });
 
@@ -337,8 +340,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _openFullImage(Message message) async {
-    final transferId = message.imageTransferId;
-    final fileName = message.imageFileName;
+    final transferId = message.transferId;
+    final fileName = message.attachmentName;
     if (transferId == null || fileName == null) return;
 
     final path = await ImageService.instance.localPathFor(transferId, fileName);
@@ -352,6 +355,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         builder: (_) => _FullImageScreen(path: path, title: fileName),
       ),
     );
+  }
+
+  Future<void> _pickAndSendFile() async {
+    final result = await FilePicker.platform.pickFiles(withData: false);
+    final path = result?.files.single.path;
+    if (path == null || !mounted) return;
+
+    final profile = ref.read(profileProvider);
+    if (profile == null) {
+      _showSnack('Create a profile before messaging');
+      return;
+    }
+    final receiverIp = _resolveParticipantIp();
+    if (receiverIp.isEmpty) {
+      _showSnack('This device is not currently reachable');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      if (!MessagingService.instance.isInitialized) {
+        await AppStartupService.instance.startPeerServices(profile);
+      }
+      await MessagingService.instance.sendFile(
+        receiverId: _participantId,
+        receiverIp: receiverIp,
+        file: File(path),
+      );
+      if (mounted) setState(() => _participantIp = receiverIp);
+      await _loadMessages();
+    } catch (e) {
+      _showSnack('Failed to send file: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _openFile(Message message) async {
+    final transferId = message.transferId;
+    final fileName = message.attachmentName;
+    if (transferId == null || fileName == null) return;
+
+    final path = await FileService.instance.localPathFor(transferId, fileName);
+    if (!await File(path).exists()) {
+      _showSnack('File is still downloading…');
+      return;
+    }
+    final result = await OpenFilex.open(path);
+    if (result.type != ResultType.done && mounted) {
+      _showSnack('Could not open file: ${result.message}');
+    }
   }
 
   void _showSnack(String message) {
@@ -524,14 +578,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             child: message.isImage
                 ? _buildImageContent(message, isMe)
-                : Text(
-                    message.textContent ?? '',
-                    style: TextStyle(
-                      color: isMe
-                          ? Colors.white
-                          : Theme.of(context).colorScheme.onSurface,
-                    ),
-                  ),
+                : message.isFile
+                    ? _buildFileContent(message, isMe)
+                    : Text(
+                        message.textContent ?? '',
+                        style: TextStyle(
+                          color: isMe
+                              ? Colors.white
+                              : Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
           ),
           const SizedBox(height: 4),
           Row(
@@ -607,7 +663,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 const SizedBox(width: 4),
                 Flexible(
                   child: Text(
-                    message.imageFileName ?? 'Photo',
+                    message.attachmentName ?? 'Photo',
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 12, color: captionColor),
                   ),
@@ -618,6 +674,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildFileContent(Message message, bool isMe) {
+    final fg = isMe ? Colors.white : Theme.of(context).colorScheme.onSurface;
+    final subFg = fg.withValues(alpha: 0.7);
+
+    return GestureDetector(
+      onTap: () => _openFile(message),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.insert_drive_file_outlined, size: 32, color: fg),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  message.attachmentName ?? 'File',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 2,
+                  style: TextStyle(color: fg, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _formatBytes(message.attachmentSize),
+                  style: TextStyle(fontSize: 12, color: subFg),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var size = bytes.toDouble();
+    var unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit++;
+    }
+    final rounded = unit == 0 ? size.toStringAsFixed(0) : size.toStringAsFixed(1);
+    return '$rounded ${units[unit]}';
   }
 
   IconData _getStatusIcon(String status) {
@@ -654,6 +758,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               icon: const Icon(Icons.image_outlined),
               tooltip: 'Send a photo',
               onPressed: _isLoading ? null : _pickAndSendImage,
+            ),
+            IconButton(
+              icon: const Icon(Icons.attach_file),
+              tooltip: 'Send a file',
+              onPressed: _isLoading ? null : _pickAndSendFile,
             ),
             Expanded(
               child: TextField(
