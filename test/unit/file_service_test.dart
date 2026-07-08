@@ -124,6 +124,50 @@ void main() {
     });
   });
 
+  group('Message previews', () {
+    test('previewText summarizes each message type', () {
+      expect(
+        Message.createTextMessage(senderId: 'a', receiverId: 'b', text: 'hi')
+            .previewText,
+        equals('hi'),
+      );
+      expect(
+        Message.createImageMessage(
+          senderId: 'a',
+          receiverId: 'b',
+          transferId: 't',
+          thumbnailBase64: 'AAAA',
+          fileName: 'p.jpg',
+          fileSize: 1,
+          width: 1,
+          height: 1,
+        ).previewText,
+        equals('📷 Photo'),
+      );
+      expect(
+        Message.createVoiceMessage(
+          senderId: 'a',
+          receiverId: 'b',
+          transferId: 't',
+          fileName: 'v.m4a',
+          fileSize: 1,
+          durationMs: 1,
+        ).previewText,
+        equals('🎤 Voice message'),
+      );
+      expect(
+        Message.createFileMessage(
+          senderId: 'a',
+          receiverId: 'b',
+          transferId: 't',
+          fileName: 'doc.pdf',
+          fileSize: 1,
+        ).previewText,
+        equals('📎 doc.pdf'),
+      );
+    });
+  });
+
   group('Voice message model', () {
     test('createVoiceMessage carries duration and is an attachment', () {
       final m = Message.createVoiceMessage(

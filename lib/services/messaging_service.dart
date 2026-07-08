@@ -19,14 +19,18 @@ import '../services/typing_service.dart';
 import '../core/utils/app_logger.dart';
 
 /// Reassembly state for an attachment (image or file) arriving in chunks.
+/// Fields are mutable because the bubble message and the chunks can be
+/// processed in either order (async decrypt handlers interleave), so whichever
+/// arrives first creates the entry and the other fills in its part.
 class _IncomingTransfer {
   final String senderId;
-  final bool isImage;
+  final DateTime startedAt = DateTime.now();
+  bool isImage = false;
   String? fileName;
   int? total;
   final Map<int, Uint8List> chunks = {};
 
-  _IncomingTransfer(this.senderId, {required this.isImage});
+  _IncomingTransfer(this.senderId);
 }
 
 class MessagingService {
@@ -422,12 +426,17 @@ class MessagingService {
       // the indicator doesn't linger until its timeout.
       TypingService.instance.clearTyping(message.senderId);
 
-      // An attachment bubble arrives before its chunks — register the transfer
-      // so the chunks that follow can be matched and reassembled.
+      // Register the attachment transfer so its chunks can be reassembled.
+      // The bubble and the chunks race (async decrypt handlers interleave), so
+      // merge into any entry the chunks already created rather than replacing
+      // it — replacing would discard chunks that arrived first.
       if (message.isAttachment && message.transferId != null) {
-        _incomingTransfers[message.transferId!] =
-            _IncomingTransfer(message.senderId, isImage: message.isImage)
-              ..fileName = message.attachmentName;
+        final transfer = _incomingTransfers.putIfAbsent(
+            message.transferId!, () => _IncomingTransfer(message.senderId));
+        transfer.isImage = message.isImage;
+        transfer.fileName = message.attachmentName;
+        // Chunks may have all arrived while fileName was still null.
+        unawaited(_finalizeTransferIfComplete(message.transferId!));
       }
 
       final deliveredMessage =
@@ -444,7 +453,7 @@ class MessagingService {
       _updateConversation(
         peerId: message.senderId,
         peerIp: peerIp,
-        lastMessage: _conversationPreview(message),
+        lastMessage: message.previewText,
         isIncoming: true,
       );
 
@@ -498,18 +507,12 @@ class MessagingService {
     }
   }
 
-  /// The conversation-list preview text for a message.
-  String _conversationPreview(Message message) {
-    if (message.isImage) return '📷 Photo';
-    if (message.isVoice) return '🎤 Voice message';
-    if (message.isFile) return '📎 ${message.attachmentName ?? 'File'}';
-    return message.textContent ?? '';
-  }
-
-  /// Accumulates one chunk of an incoming attachment; once every chunk has
-  /// arrived, reassembles the bytes, writes them to disk, and notifies listeners.
+  /// Accumulates one chunk of an incoming attachment, then attempts to complete
+  /// the transfer (which succeeds once the bubble and every chunk have arrived).
   Future<void> _handleTransferChunk(Message message) async {
     try {
+      _pruneStaleTransfers();
+
       final transferId = message.payload['transferId'] as String?;
       final index = (message.payload['index'] as num?)?.toInt();
       final total = (message.payload['total'] as num?)?.toInt();
@@ -530,17 +533,31 @@ class MessagingService {
         return;
       }
 
-      // Chunks should only ever arrive after the bubble registered the
-      // transfer; if not (unexpected), default to treating it as a file.
-      final transfer = _incomingTransfers.putIfAbsent(transferId,
-          () => _IncomingTransfer(message.senderId, isImage: false));
+      final transfer = _incomingTransfers.putIfAbsent(
+          transferId, () => _IncomingTransfer(message.senderId));
       transfer.total = total;
       transfer.chunks[index] = base64.decode(data);
 
-      // Still waiting on the bubble (for the file name) or more chunks.
-      if (transfer.fileName == null) return;
-      if (transfer.chunks.length < total) return;
+      await _finalizeTransferIfComplete(transferId);
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to handle transfer chunk', e, stackTrace);
+    }
+  }
 
+  /// Writes an attachment to disk once its bubble (file name) and all chunks
+  /// have arrived. A no-op until then. Removes the transfer from the map before
+  /// the disk write so a concurrent call can't finalize the same one twice.
+  Future<void> _finalizeTransferIfComplete(String transferId) async {
+    final transfer = _incomingTransfers[transferId];
+    if (transfer == null) return;
+
+    final total = transfer.total;
+    if (transfer.fileName == null || total == null) return;
+    if (transfer.chunks.length < total) return;
+
+    _incomingTransfers.remove(transferId);
+
+    try {
       final ordered = [
         for (var i = 0; i < total; i++) transfer.chunks[i] ?? Uint8List(0)
       ];
@@ -552,13 +569,19 @@ class MessagingService {
         await FileService.instance
             .saveBytes(transferId, transfer.fileName!, bytes);
       }
-      _incomingTransfers.remove(transferId);
-
       _transferReadyController.add(transferId);
       AppLogger.instance.info('Transfer complete: $transferId');
     } catch (e, stackTrace) {
-      AppLogger.instance.error('Failed to handle transfer chunk', e, stackTrace);
+      AppLogger.instance.error('Failed to finalize transfer', e, stackTrace);
     }
+  }
+
+  /// Drops transfers that never completed so their buffered chunks don't leak.
+  void _pruneStaleTransfers() {
+    if (_incomingTransfers.isEmpty) return;
+    final cutoff = DateTime.now().subtract(AppConstants.incomingTransferTtl);
+    _incomingTransfers
+        .removeWhere((_, transfer) => transfer.startedAt.isBefore(cutoff));
   }
 
   /// Ranks a status so that late/duplicate control packets can never move a

@@ -238,6 +238,14 @@ class Message {
   String? get textContent => payload['message'] as String?;
   String? get originalMessageId => payload['originalMessageId'] as String?;
 
+  /// A short one-line preview for conversation lists and notifications.
+  String get previewText {
+    if (isImage) return '📷 Photo';
+    if (isVoice) return '🎤 Voice message';
+    if (isFile) return '📎 ${attachmentName ?? 'File'}';
+    return textContent ?? '';
+  }
+
   // Transfer accessors shared by image, file, and voice messages.
   bool get isImage => type == AppConstants.messageTypeImage;
   bool get isFile => type == AppConstants.messageTypeFile;

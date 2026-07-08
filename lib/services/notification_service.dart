@@ -113,7 +113,7 @@ class NotificationService {
   void showNewMessageNotification(Message message, String senderName) {
     if (!_isEnabled) return;
 
-    final preview = _previewFor(message);
+    final preview = message.previewText;
 
     final notification = AppNotification(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -135,14 +135,6 @@ class NotificationService {
         preview,
       ));
     }
-  }
-
-  /// A short preview of a message for notification/list display.
-  String _previewFor(Message message) {
-    if (message.isImage) return '📷 Photo';
-    if (message.isVoice) return '🎤 Voice message';
-    if (message.isFile) return '📎 ${message.attachmentName ?? 'File'}';
-    return message.textContent ?? '';
   }
 
   Future<void> _showSystemNotification(int id, String title, String body) async {

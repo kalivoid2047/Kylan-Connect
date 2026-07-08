@@ -48,6 +48,8 @@ class AppConstants {
   static const int thumbnailMaxDimension = 320; // px, longest edge
   static const int maxTransferBytes =
       100 * 1024 * 1024; // reject larger transfers
+  // Drop a partially-received transfer whose chunks stop arriving after this.
+  static const Duration incomingTransferTtl = Duration(minutes: 5);
 
   // Message Status
   static const String messageStatusSending = 'sending';
