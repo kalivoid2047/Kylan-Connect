@@ -69,6 +69,10 @@
 	<!-- Required to attach photos to messages (image_picker) -->
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Kylan Connect needs access to your photo library so you can send photos in chats.</string>
+
+	<!-- Required to record voice messages -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Kylan Connect needs microphone access so you can record voice messages.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_kylanconnect._tcp</string>

@@ -183,8 +183,34 @@ class Message {
     );
   }
 
-  /// A single chunk of a binary transfer (image or file). Ephemeral — routed
-  /// and reassembled, never persisted.
+  /// A voice message: an audio file streamed like any other attachment, with
+  /// its duration carried in the payload so the bubble can show it.
+  static Message createVoiceMessage({
+    required String senderId,
+    required String receiverId,
+    required String transferId,
+    required String fileName,
+    required int fileSize,
+    required int durationMs,
+  }) {
+    return Message(
+      id: const Uuid().v4(),
+      type: AppConstants.messageTypeVoice,
+      senderId: senderId,
+      receiverId: receiverId,
+      payload: {
+        'transferId': transferId,
+        'fileName': fileName,
+        'fileSize': fileSize,
+        'durationMs': durationMs,
+      },
+      timestamp: DateTime.now(),
+      status: AppConstants.messageStatusSending,
+    );
+  }
+
+  /// A single chunk of a binary transfer (image, file, or voice). Ephemeral —
+  /// routed and reassembled, never persisted.
   static Message createFileChunk({
     required String senderId,
     required String receiverId,
@@ -212,13 +238,15 @@ class Message {
   String? get textContent => payload['message'] as String?;
   String? get originalMessageId => payload['originalMessageId'] as String?;
 
-  // Transfer accessors shared by image and file messages.
+  // Transfer accessors shared by image, file, and voice messages.
   bool get isImage => type == AppConstants.messageTypeImage;
   bool get isFile => type == AppConstants.messageTypeFile;
-  bool get isAttachment => isImage || isFile;
+  bool get isVoice => type == AppConstants.messageTypeVoice;
+  bool get isAttachment => isImage || isFile || isVoice;
   String? get transferId => payload['transferId'] as String?;
   String? get attachmentName => payload['fileName'] as String?;
   int get attachmentSize => (payload['fileSize'] as num?)?.toInt() ?? 0;
+  int get voiceDurationMs => (payload['durationMs'] as num?)?.toInt() ?? 0;
 
   // Image-specific accessors.
   String? get thumbnailBase64 => payload['thumbnail'] as String?;

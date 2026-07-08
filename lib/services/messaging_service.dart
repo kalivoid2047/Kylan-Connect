@@ -260,6 +260,67 @@ class MessagingService {
     }
   }
 
+  /// Sends a recorded voice message: an audio file streamed like any other
+  /// attachment, plus its [durationMs] so the receiver's bubble shows length.
+  Future<Message> sendVoice({
+    required String receiverId,
+    required String receiverIp,
+    required File audioFile,
+    required int durationMs,
+  }) async {
+    if (!_isInitialized) {
+      throw const MessagingException('Messaging service not initialized');
+    }
+    if (!CryptoService.instance.canEncryptFor(receiverId)) {
+      throw const MessagingException(
+          'No public key for peer — cannot send voice message');
+    }
+
+    final bytes = await audioFile.readAsBytes();
+    final transferId = const Uuid().v4();
+    final fileName = audioFile.path.split(RegExp(r'[/\\]')).last;
+
+    await FileService.instance.saveBytes(transferId, fileName, bytes);
+
+    final message = Message.createVoiceMessage(
+      senderId: _currentUserId!,
+      receiverId: receiverId,
+      transferId: transferId,
+      fileName: fileName,
+      fileSize: bytes.length,
+      durationMs: durationMs,
+    );
+    final conversationId =
+        Conversation.generateConversationId(_currentUserId!, receiverId);
+
+    try {
+      await StorageService.instance.saveMessage(conversationId, message);
+      await _updateConversation(
+        peerId: receiverId,
+        peerIp: receiverIp,
+        lastMessage: '🎤 Voice message',
+        isIncoming: false,
+      );
+
+      await _sendToPeer(receiverIp, message, receiverId);
+      await _sendTransferChunks(receiverId, receiverIp, transferId, bytes);
+
+      final sent = message.copyWith(status: AppConstants.messageStatusSent);
+      await StorageService.instance.updateMessageStatus(
+          conversationId, message.id, AppConstants.messageStatusSent);
+      _messageStatusController.add(sent);
+      AppLogger.instance.info('Voice message sent to $receiverId: $transferId');
+      return sent;
+    } catch (e, stackTrace) {
+      await StorageService.instance.updateMessageStatus(
+          conversationId, message.id, AppConstants.messageStatusFailed);
+      _messageStatusController
+          .add(message.copyWith(status: AppConstants.messageStatusFailed));
+      AppLogger.instance.error('Failed to send voice message', e, stackTrace);
+      throw MessagingException('Failed to send voice message', e);
+    }
+  }
+
   Future<void> _sendTransferChunks(String receiverId, String receiverIp,
       String transferId, List<int> bytes) async {
     final chunks =
@@ -440,6 +501,7 @@ class MessagingService {
   /// The conversation-list preview text for a message.
   String _conversationPreview(Message message) {
     if (message.isImage) return '📷 Photo';
+    if (message.isVoice) return '🎤 Voice message';
     if (message.isFile) return '📎 ${message.attachmentName ?? 'File'}';
     return message.textContent ?? '';
   }

@@ -123,4 +123,29 @@ void main() {
       expect(c.payload['data'], equals('Zm9v'));
     });
   });
+
+  group('Voice message model', () {
+    test('createVoiceMessage carries duration and is an attachment', () {
+      final m = Message.createVoiceMessage(
+        senderId: 'a',
+        receiverId: 'b',
+        transferId: 'tx',
+        fileName: 'voice_abc.m4a',
+        fileSize: 20480,
+        durationMs: 4200,
+      );
+
+      expect(m.type, equals(AppConstants.messageTypeVoice));
+      expect(m.isVoice, isTrue);
+      expect(m.isFile, isFalse);
+      expect(m.isImage, isFalse);
+      expect(m.isAttachment, isTrue);
+      expect(m.isControlMessage, isFalse);
+      expect(m.transferId, equals('tx'));
+      expect(m.attachmentName, equals('voice_abc.m4a'));
+      expect(m.attachmentSize, equals(20480));
+      expect(m.voiceDurationMs, equals(4200));
+      expect(m.status, equals(AppConstants.messageStatusSending));
+    });
+  });
 }

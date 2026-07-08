@@ -13,6 +13,9 @@
          foreground-service notifications are granted automatically without a user prompt. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
+    <!-- Recording voice messages -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
     <application
         android:label="Kylan Connect"
         android:name="${applicationName}"

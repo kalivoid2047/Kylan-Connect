@@ -3,11 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:uuid/uuid.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/validators.dart';
 import '../../core/utils/extensions.dart';
@@ -57,6 +61,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   // stays alive between keystrokes.
   Timer? _typingThrottle;
   static const Duration _typingSendInterval = Duration(seconds: 2);
+
+  // Voice recording state.
+  final AudioRecorder _recorder = AudioRecorder();
+  bool _isRecording = false;
+  DateTime? _recordStart;
+  Duration _recordElapsed = Duration.zero;
+  Timer? _recordTimer;
+  String? _recordPath;
 
   @override
   void initState() {
@@ -111,6 +123,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _typingStoppedSubscription?.cancel();
     _imageReadySubscription?.cancel();
     _typingThrottle?.cancel();
+    _recordTimer?.cancel();
+    _recorder.dispose();
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -408,6 +422,114 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  Future<void> _startRecording() async {
+    try {
+      if (!await _recorder.hasPermission()) {
+        _showSnack('Microphone permission is required');
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}/voice_${const Uuid().v4()}.m4a';
+      await _recorder.start(const RecordConfig(), path: path);
+
+      _recordPath = path;
+      _recordStart = DateTime.now();
+      _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() =>
+              _recordElapsed = DateTime.now().difference(_recordStart!));
+        }
+      });
+      if (mounted) {
+        setState(() {
+          _isRecording = true;
+          _recordElapsed = Duration.zero;
+        });
+      }
+    } catch (e) {
+      _showSnack('Could not start recording: $e');
+    }
+  }
+
+  Future<void> _cancelRecording() async {
+    _recordTimer?.cancel();
+    try {
+      await _recorder.stop();
+    } catch (_) {}
+    final path = _recordPath;
+    if (path != null) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+    _recordPath = null;
+    if (mounted) {
+      setState(() {
+        _isRecording = false;
+        _recordElapsed = Duration.zero;
+      });
+    }
+  }
+
+  Future<void> _stopAndSendRecording() async {
+    _recordTimer?.cancel();
+    final durationMs = _recordStart != null
+        ? DateTime.now().difference(_recordStart!).inMilliseconds
+        : 0;
+
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (_) {}
+    path ??= _recordPath;
+
+    if (mounted) {
+      setState(() {
+        _isRecording = false;
+        _recordElapsed = Duration.zero;
+      });
+    }
+    if (path == null) return;
+
+    if (durationMs < 500) {
+      _showSnack('Recording too short');
+      try {
+        await File(path).delete();
+      } catch (_) {}
+      return;
+    }
+
+    final profile = ref.read(profileProvider);
+    if (profile == null) {
+      _showSnack('Create a profile before messaging');
+      return;
+    }
+    final receiverIp = _resolveParticipantIp();
+    if (receiverIp.isEmpty) {
+      _showSnack('This device is not currently reachable');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      if (!MessagingService.instance.isInitialized) {
+        await AppStartupService.instance.startPeerServices(profile);
+      }
+      await MessagingService.instance.sendVoice(
+        receiverId: _participantId,
+        receiverIp: receiverIp,
+        audioFile: File(path),
+        durationMs: durationMs,
+      );
+      if (mounted) setState(() => _participantIp = receiverIp);
+      await _loadMessages();
+    } catch (e) {
+      _showSnack('Failed to send voice message: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   void _showSnack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -578,16 +700,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             child: message.isImage
                 ? _buildImageContent(message, isMe)
-                : message.isFile
-                    ? _buildFileContent(message, isMe)
-                    : Text(
-                        message.textContent ?? '',
-                        style: TextStyle(
-                          color: isMe
-                              ? Colors.white
-                              : Theme.of(context).colorScheme.onSurface,
-                        ),
-                      ),
+                : message.isVoice
+                    ? _VoiceBubble(message: message, isMe: isMe)
+                    : message.isFile
+                        ? _buildFileContent(message, isMe)
+                        : Text(
+                            message.textContent ?? '',
+                            style: TextStyle(
+                              color: isMe
+                                  ? Colors.white
+                                  : Theme.of(context).colorScheme.onSurface,
+                            ),
+                          ),
           ),
           const SizedBox(height: 4),
           Row(
@@ -752,54 +876,110 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ],
       ),
       child: SafeArea(
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.image_outlined),
-              tooltip: 'Send a photo',
-              onPressed: _isLoading ? null : _pickAndSendImage,
-            ),
-            IconButton(
-              icon: const Icon(Icons.attach_file),
-              tooltip: 'Send a file',
-              onPressed: _isLoading ? null : _pickAndSendFile,
-            ),
-            Expanded(
-              child: TextField(
-                controller: _messageController,
-                decoration: InputDecoration(
-                  hintText: 'Type a message...',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor:
-                      Theme.of(context).colorScheme.surfaceContainerHighest,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 12,
-                  ),
-                ),
-                maxLines: null,
-                textCapitalization: TextCapitalization.sentences,
-                onChanged: _onComposerChanged,
-                onSubmitted: (_) => _sendMessage(),
+        child: _isRecording ? _buildRecordingBar() : _buildInputRow(),
+      ),
+    );
+  }
+
+  Widget _buildInputRow() {
+    return Row(
+      children: [
+        IconButton(
+          icon: const Icon(Icons.image_outlined),
+          tooltip: 'Send a photo',
+          onPressed: _isLoading ? null : _pickAndSendImage,
+        ),
+        IconButton(
+          icon: const Icon(Icons.attach_file),
+          tooltip: 'Send a file',
+          onPressed: _isLoading ? null : _pickAndSendFile,
+        ),
+        Expanded(
+          child: TextField(
+            controller: _messageController,
+            decoration: InputDecoration(
+              hintText: 'Type a message...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(24),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 20,
+                vertical: 12,
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton(
-              icon: const Icon(Icons.send),
-              onPressed: _isLoading ? null : _sendMessage,
+            maxLines: null,
+            textCapitalization: TextCapitalization.sentences,
+            onChanged: _onComposerChanged,
+            onSubmitted: (_) => _sendMessage(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        // Show a mic when there's nothing to send, a send button otherwise.
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _messageController,
+          builder: (context, value, _) {
+            final hasText = value.text.trim().isNotEmpty;
+            return IconButton(
+              icon: Icon(hasText ? Icons.send : Icons.mic),
+              onPressed: _isLoading
+                  ? null
+                  : (hasText ? _sendMessage : _startRecording),
               style: IconButton.styleFrom(
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 foregroundColor: Colors.white,
               ),
-            ),
-          ],
+            );
+          },
         ),
-      ),
+      ],
     );
+  }
+
+  Widget _buildRecordingBar() {
+    return Row(
+      children: [
+        IconButton(
+          icon: const Icon(Icons.delete_outline, color: Colors.red),
+          tooltip: 'Cancel',
+          onPressed: _cancelRecording,
+        ),
+        const SizedBox(width: 4),
+        Container(
+          width: 10,
+          height: 10,
+          decoration: const BoxDecoration(
+            color: Colors.red,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          _formatDuration(_recordElapsed),
+          style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+        ),
+        const Spacer(),
+        const Text('Recording…'),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.send),
+          tooltip: 'Send',
+          onPressed: _isLoading ? null : _stopAndSendRecording,
+          style: IconButton.styleFrom(
+            backgroundColor: Theme.of(context).colorScheme.primary,
+            foregroundColor: Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _formatDuration(Duration d) {
+    final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 
   void _showOptionsMenu() {
@@ -884,6 +1064,143 @@ class _FullImageScreen extends StatelessWidget {
           child: Image.file(File(path)),
         ),
       ),
+    );
+  }
+}
+
+/// A playable voice-message bubble: play/pause, a progress bar, and duration.
+class _VoiceBubble extends StatefulWidget {
+  final Message message;
+  final bool isMe;
+
+  const _VoiceBubble({required this.message, required this.isMe});
+
+  @override
+  State<_VoiceBubble> createState() => _VoiceBubbleState();
+}
+
+class _VoiceBubbleState extends State<_VoiceBubble> {
+  final AudioPlayer _player = AudioPlayer();
+  StreamSubscription<PlayerState>? _stateSub;
+  StreamSubscription<Duration>? _posSub;
+  StreamSubscription<void>? _completeSub;
+
+  bool _playing = false;
+  Duration _position = Duration.zero;
+  Duration _total = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    final ms = widget.message.voiceDurationMs;
+    if (ms > 0) _total = Duration(milliseconds: ms);
+
+    _stateSub = _player.onPlayerStateChanged.listen((state) {
+      if (mounted) setState(() => _playing = state == PlayerState.playing);
+    });
+    _completeSub = _player.onPlayerComplete.listen((_) {
+      if (mounted) {
+        setState(() {
+          _playing = false;
+          _position = Duration.zero;
+        });
+      }
+    });
+    _posSub = _player.onPositionChanged.listen((pos) {
+      if (mounted) setState(() => _position = pos);
+    });
+  }
+
+  @override
+  void dispose() {
+    _stateSub?.cancel();
+    _posSub?.cancel();
+    _completeSub?.cancel();
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    if (_playing) {
+      await _player.pause();
+      return;
+    }
+
+    final transferId = widget.message.transferId;
+    final fileName = widget.message.attachmentName;
+    if (transferId == null || fileName == null) return;
+
+    final path = await FileService.instance.localPathFor(transferId, fileName);
+    if (!await File(path).exists()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Voice message is still downloading…')),
+        );
+      }
+      return;
+    }
+
+    if (_position > Duration.zero && _position < _total) {
+      await _player.resume();
+    } else {
+      await _player.play(DeviceFileSource(path));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fg =
+        widget.isMe ? Colors.white : Theme.of(context).colorScheme.onSurface;
+    final total =
+        _total.inMilliseconds > 0 ? _total : const Duration(seconds: 1);
+    final progress =
+        (_position.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0);
+    final label = (_playing || _position > Duration.zero) ? _position : _total;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: Icon(
+            _playing ? Icons.pause_circle_filled : Icons.play_circle_fill,
+            size: 36,
+            color: fg,
+          ),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+          onPressed: _toggle,
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 130,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  backgroundColor: fg.withValues(alpha: 0.25),
+                  color: fg,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(Icons.mic, size: 12, color: fg.withValues(alpha: 0.7)),
+                  const SizedBox(width: 4),
+                  Text(
+                    _ChatScreenState._formatDuration(label),
+                    style:
+                        TextStyle(fontSize: 12, color: fg.withValues(alpha: 0.7)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
