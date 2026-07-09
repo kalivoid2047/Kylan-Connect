@@ -3,8 +3,10 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import '../core/constants/storage_constants.dart';
 import '../exceptions/storage_exception.dart';
+import 'dart:convert';
 import '../models/app_settings.dart';
 import '../models/conversation.dart';
+import '../models/group.dart';
 import '../models/message.dart';
 import '../models/peer_device.dart';
 import '../models/user_profile.dart';
@@ -20,6 +22,7 @@ class StorageService {
   late Box<PeerDevice> _peersBox;
   late Box<AppSettings> _settingsBox;
   late Box<String> _keysBox;
+  late Box<String> _groupsBox;
 
   bool _isInitialized = false;
 
@@ -49,6 +52,7 @@ class StorageService {
       _settingsBox =
           await Hive.openBox<AppSettings>(StorageConstants.settingsBox);
       _keysBox = await Hive.openBox<String>(StorageConstants.keysBox);
+      _groupsBox = await Hive.openBox<String>(StorageConstants.groupsBox);
 
       _isInitialized = true;
       AppLogger.instance.info('Storage service initialized successfully');
@@ -78,6 +82,7 @@ class StorageService {
     _settingsBox =
         await Hive.openBox<AppSettings>(StorageConstants.settingsBox);
     _keysBox = await Hive.openBox<String>(StorageConstants.keysBox);
+    _groupsBox = await Hive.openBox<String>(StorageConstants.groupsBox);
 
     _isInitialized = true;
   }
@@ -395,6 +400,49 @@ class StorageService {
 
   String? getPinnedPeerPublicKey(String peerDeviceId) =>
       _keysBox.get('${StorageConstants.pinnedPeerKeyPrefix}$peerDeviceId');
+
+  // Group Operations
+  Future<void> saveGroup(Group group) async {
+    try {
+      await _groupsBox.put(group.groupId, jsonEncode(group.toJson()));
+      AppLogger.instance.debug('Group saved: ${group.groupId}');
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to save group', e, stackTrace);
+      throw StorageException('Failed to save group', e);
+    }
+  }
+
+  Group? getGroup(String groupId) {
+    try {
+      final raw = _groupsBox.get(groupId);
+      if (raw == null) return null;
+      return Group.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to get group', e, stackTrace);
+      return null;
+    }
+  }
+
+  List<Group> getAllGroups() {
+    try {
+      return _groupsBox.values
+          .map((raw) => Group.fromJson(jsonDecode(raw) as Map<String, dynamic>))
+          .toList();
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to get groups', e, stackTrace);
+      return [];
+    }
+  }
+
+  Future<void> deleteGroup(String groupId) async {
+    try {
+      await _groupsBox.delete(groupId);
+      AppLogger.instance.debug('Group deleted: $groupId');
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to delete group', e, stackTrace);
+      throw StorageException('Failed to delete group', e);
+    }
+  }
 
   // Peer Device Operations
   Future<void> savePeer(PeerDevice peer) async {

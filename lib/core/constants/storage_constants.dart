@@ -6,6 +6,7 @@ class StorageConstants {
   static const String peersBox = 'peers_box';
   static const String settingsBox = 'settings_box';
   static const String keysBox = 'keys_box';
+  static const String groupsBox = 'groups_box';
 
   // Key Names
   static const String currentProfileKey = 'current_profile';

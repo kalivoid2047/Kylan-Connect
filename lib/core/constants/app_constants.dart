@@ -42,6 +42,8 @@ class AppConstants {
   static const String messageTypeReadReceipt = 'read_receipt';
   // Generic binary-transfer chunk, shared by image and file sharing.
   static const String messageTypeFileChunk = 'file_chunk';
+  // Group membership announcement (control message).
+  static const String messageTypeGroupInvite = 'group_invite';
 
   // Binary transfers (images + files)
   static const int transferChunkSize = 32 * 1024; // raw bytes per chunk

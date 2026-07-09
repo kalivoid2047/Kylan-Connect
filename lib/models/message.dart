@@ -80,6 +80,43 @@ class Message {
     );
   }
 
+  /// A text message addressed to a group. The same logical message is fanned
+  /// out to each member (encrypted per-member); [groupId] tells the receiver to
+  /// file it under the group conversation.
+  static Message createGroupTextMessage({
+    required String senderId,
+    required String groupId,
+    required String text,
+  }) {
+    return Message(
+      id: const Uuid().v4(),
+      type: AppConstants.messageTypeText,
+      senderId: senderId,
+      receiverId: groupId,
+      payload: {'message': text, 'groupId': groupId},
+      timestamp: DateTime.now(),
+      status: AppConstants.messageStatusSending,
+    );
+  }
+
+  /// A control message announcing group membership. Carries the full group
+  /// definition so the recipient can create the group locally.
+  static Message createGroupInvite({
+    required String senderId,
+    required String receiverId,
+    required Map<String, dynamic> groupJson,
+  }) {
+    return Message(
+      id: const Uuid().v4(),
+      type: AppConstants.messageTypeGroupInvite,
+      senderId: senderId,
+      receiverId: receiverId,
+      payload: {'group': groupJson},
+      timestamp: DateTime.now(),
+      status: AppConstants.messageStatusSent,
+    );
+  }
+
   static Message createDeliveryAck({
     required String senderId,
     required String receiverId,
@@ -238,6 +275,14 @@ class Message {
   String? get textContent => payload['message'] as String?;
   String? get originalMessageId => payload['originalMessageId'] as String?;
 
+  /// The group this message belongs to, if any (present on group messages).
+  String? get groupId => payload['groupId'] as String?;
+  bool get isGroupMessage => groupId != null;
+
+  /// The group definition carried by a group_invite control message.
+  Map<String, dynamic>? get groupInvitePayload =>
+      payload['group'] as Map<String, dynamic>?;
+
   /// A short one-line preview for conversation lists and notifications.
   String get previewText {
     if (isImage) return '📷 Photo';
@@ -265,5 +310,6 @@ class Message {
       type == AppConstants.messageTypeDeliveryAck ||
       type == AppConstants.messageTypeReadReceipt ||
       type == AppConstants.messageTypeTyping ||
-      type == AppConstants.messageTypeFileChunk;
+      type == AppConstants.messageTypeFileChunk ||
+      type == AppConstants.messageTypeGroupInvite;
 }

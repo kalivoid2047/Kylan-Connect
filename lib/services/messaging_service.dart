@@ -7,6 +7,7 @@ import '../core/constants/app_constants.dart';
 import '../core/security/crypto_service.dart';
 import '../core/errors/exceptions.dart';
 import '../models/conversation.dart';
+import '../models/group.dart';
 import '../models/message.dart';
 import '../models/message_packet.dart';
 import '../services/connection_manager.dart';
@@ -130,6 +131,129 @@ class MessagingService {
           .add(message.copyWith(status: AppConstants.messageStatusFailed));
       AppLogger.instance.error('Failed to send message', e, stackTrace);
       throw MessagingException('Failed to send message', e);
+    }
+  }
+
+  /// Creates a group locally and announces membership to the other members.
+  /// The local device is always included as a member.
+  Future<Group> createGroup({
+    required String name,
+    required List<String> memberIds,
+    required String avatarColor,
+  }) async {
+    if (!_isInitialized) {
+      throw const MessagingException('Messaging service not initialized');
+    }
+    final members = <String>{...memberIds, _currentUserId!}.toList();
+    final group = Group.create(
+      name: name,
+      memberIds: members,
+      createdBy: _currentUserId!,
+      avatarColor: avatarColor,
+    );
+
+    await StorageService.instance.saveGroup(group);
+    await _updateGroupConversation(group, 'Group created', isIncoming: false);
+    await _fanOutGroupInvite(group);
+
+    AppLogger.instance
+        .info('Group created: ${group.groupId} (${members.length} members)');
+    return group;
+  }
+
+  Future<void> _fanOutGroupInvite(Group group) async {
+    for (final member in group.memberIds) {
+      if (member == _currentUserId) continue;
+      final ip = DiscoveryService.instance.getPeer(member)?.ipAddress ?? '';
+      final invite = Message.createGroupInvite(
+        senderId: _currentUserId!,
+        receiverId: member,
+        groupJson: group.toJson(),
+      );
+      await _sendControlMessage(invite, member, ip);
+    }
+  }
+
+  /// Sends a text message to every reachable group member (fan-out). Each copy
+  /// is encrypted with that member's pairwise key. Unreachable members are
+  /// skipped (best-effort); the message is still stored locally.
+  Future<Message> sendGroupMessage({
+    required String groupId,
+    required String text,
+  }) async {
+    if (!_isInitialized) {
+      throw const MessagingException('Messaging service not initialized');
+    }
+    final group = StorageService.instance.getGroup(groupId);
+    if (group == null) {
+      throw const MessagingException('Unknown group');
+    }
+
+    final message = Message.createGroupTextMessage(
+      senderId: _currentUserId!,
+      groupId: groupId,
+      text: text,
+    );
+    await StorageService.instance.saveMessage(groupId, message);
+    await _updateGroupConversation(group, text, isIncoming: false);
+
+    var anySent = false;
+    for (final member in group.memberIds) {
+      if (member == _currentUserId) continue;
+      final ip = DiscoveryService.instance.getPeer(member)?.ipAddress ?? '';
+      if (ip.isEmpty || !CryptoService.instance.canEncryptFor(member)) continue;
+      try {
+        await _sendToPeer(ip, message, member);
+        anySent = true;
+      } catch (e) {
+        AppLogger.instance
+            .warning('Group send to $member failed: $e');
+      }
+    }
+
+    final status = anySent
+        ? AppConstants.messageStatusSent
+        : AppConstants.messageStatusSending;
+    await StorageService.instance.updateMessageStatus(groupId, message.id, status);
+    final updated = message.copyWith(status: status);
+    _messageStatusController.add(updated);
+    return updated;
+  }
+
+  Future<void> _updateGroupConversation(Group group, String lastMessage,
+      {required bool isIncoming}) async {
+    try {
+      final existing = StorageService.instance.getConversation(group.groupId);
+      final unread = isIncoming ? (existing?.unreadCount ?? 0) + 1 : 0;
+      await StorageService.instance.saveConversation(Conversation(
+        conversationId: group.groupId,
+        participantId: group.groupId,
+        participantName: group.name,
+        participantAvatarColor: group.avatarColor,
+        lastMessage: lastMessage,
+        lastMessageTime: DateTime.now(),
+        unreadCount: unread,
+        isOnline: false,
+      ));
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to update group conversation', e, stackTrace);
+    }
+  }
+
+  void _handleGroupInvite(Message message) {
+    final groupJson = message.groupInvitePayload;
+    if (groupJson == null) return;
+    try {
+      final group = Group.fromJson(groupJson);
+      // Ignore if we somehow aren't a member.
+      if (!group.memberIds.contains(_currentUserId)) return;
+      StorageService.instance.saveGroup(group);
+      _updateGroupConversation(group, 'You were added to ${group.name}',
+          isIncoming: true);
+      AppLogger.instance.info('Joined group: ${group.groupId}');
+    } catch (e, stackTrace) {
+      AppLogger.instance.error('Failed to handle group invite', e, stackTrace);
     }
   }
 
@@ -442,34 +566,58 @@ class MessagingService {
       final deliveredMessage =
           message.copyWith(status: AppConstants.messageStatusDelivered);
 
-      final conversationId = Conversation.generateConversationId(
-          _currentUserId!, message.senderId);
+      // Group messages are filed under the group conversation (keyed by the
+      // groupId); 1:1 messages under the pairwise conversation.
+      final group = message.isGroupMessage
+          ? StorageService.instance.getGroup(message.groupId!)
+          : null;
+      if (message.isGroupMessage && group == null) {
+        // We don't know this group (missed the invite) — ignore.
+        AppLogger.instance
+            .warning('Group message for unknown group ${message.groupId}');
+        return;
+      }
+      final conversationId = group != null
+          ? group.groupId
+          : Conversation.generateConversationId(
+              _currentUserId!, message.senderId);
       StorageService.instance.saveMessage(conversationId, deliveredMessage);
 
       // Look up sender's IP from discovery (may be empty if peer is offline).
       final peerIp =
           DiscoveryService.instance.getPeer(message.senderId)?.ipAddress ?? '';
 
-      _updateConversation(
-        peerId: message.senderId,
-        peerIp: peerIp,
-        lastMessage: message.previewText,
-        isIncoming: true,
-      );
-
-      // Fire in-app notification.
       final senderName =
           DiscoveryService.instance.getPeer(message.senderId)?.displayName ??
               'Unknown';
+
+      if (group != null) {
+        _updateGroupConversation(group, message.previewText, isIncoming: true);
+      } else {
+        _updateConversation(
+          peerId: message.senderId,
+          peerIp: peerIp,
+          lastMessage: message.previewText,
+          isIncoming: true,
+        );
+      }
+
+      // Fire in-app notification (group shows the group name as the title).
+      final notificationTitle =
+          group != null ? '${group.name}: $senderName' : senderName;
       NotificationService.instance
-          .showNewMessageNotification(deliveredMessage, senderName);
+          .showNewMessageNotification(deliveredMessage, notificationTitle);
 
       _messageReceivedController.add(deliveredMessage);
       AppLogger.instance
           .info('Message received from ${message.senderId}: ${message.id}');
 
       // Tell the sender we received it so their copy flips to "delivered".
-      _sendDeliveryAck(message, peerIp);
+      // Skipped for group messages (delivery status is per-conversation and a
+      // group message has many recipients — no single "delivered" tick).
+      if (!message.isGroupMessage) {
+        _sendDeliveryAck(message, peerIp);
+      }
     } catch (e, stackTrace) {
       AppLogger.instance
           .error('Failed to handle incoming packet', e, stackTrace);
@@ -500,6 +648,9 @@ class MessagingService {
         break;
       case AppConstants.messageTypeFileChunk:
         _handleTransferChunk(message);
+        break;
+      case AppConstants.messageTypeGroupInvite:
+        _handleGroupInvite(message);
         break;
       default:
         AppLogger.instance
