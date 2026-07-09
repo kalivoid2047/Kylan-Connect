@@ -51,6 +51,9 @@ dependencies:
   # OS notifications
   flutter_local_notifications: ^18.0.1
 
+  # mDNS/Bonjour service discovery (Phase 3)
+  nsd: ^5.0.1
+
   # Utilities
   intl: ^0.19.0
   logger: ^2.4.0

@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:nsd/nsd.dart' as nsd;
 import '../core/constants/app_constants.dart';
 import '../core/constants/network_constants.dart';
 import '../core/errors/exceptions.dart';
 import '../core/security/crypto_service.dart';
 import '../models/discovery_packet.dart';
 import '../models/peer_device.dart';
+import '../services/mdns_codec.dart';
 import '../services/storage_service.dart';
 import '../core/utils/app_logger.dart';
 
@@ -19,6 +21,14 @@ class DiscoveryService {
   Timer? _broadcastTimer;
   Timer? _cleanupTimer;
   StreamSubscription<RawSocketEvent>? _socketSubscription;
+
+  // mDNS/Bonjour discovery runs alongside UDP broadcast.
+  nsd.Registration? _mdnsRegistration;
+  nsd.Discovery? _mdnsDiscovery;
+
+  /// deviceIds currently advertised via mDNS. These are kept alive by explicit
+  /// "service lost" events rather than the UDP heartbeat timeout.
+  final Set<String> _mdnsPresentPeers = {};
 
   final Map<String, PeerDevice> _activePeers = {};
   final StreamController<PeerDevice> _peerDiscoveredController =
@@ -123,6 +133,9 @@ class DiscoveryService {
 
       // Initial broadcast
       broadcastPresence();
+
+      // Start mDNS/Bonjour alongside UDP broadcast (best-effort).
+      unawaited(_startMdns());
     } catch (e, stackTrace) {
       AppLogger.instance
           .error('Failed to start discovery service', e, stackTrace);
@@ -138,6 +151,7 @@ class DiscoveryService {
       _cleanupTimer?.cancel();
       _socketSubscription?.cancel();
       _socket?.close();
+      await _stopMdns();
 
       _isRunning = false;
       _activePeers.clear();
@@ -210,6 +224,94 @@ class DiscoveryService {
     final octets = ip.split('.');
     if (octets.length != 4) return NetworkConstants.broadcastAddress;
     return '${octets[0]}.${octets[1]}.${octets[2]}.255';
+  }
+
+  /// Registers our service and starts browsing via mDNS/Bonjour. Best-effort:
+  /// on platforms without support it logs and leaves UDP broadcast as the only
+  /// transport.
+  Future<void> _startMdns() async {
+    try {
+      final txt = MdnsCodec.encode(
+        deviceId: _deviceId!,
+        deviceName: _deviceName!,
+        avatarColor: _avatarColor!,
+        platform: _getPlatform(),
+        appVersion: AppConstants.appVersion,
+        publicKey: CryptoService.instance.isReady
+            ? CryptoService.instance.publicKeyBase64
+            : null,
+      );
+
+      _mdnsRegistration = await nsd.register(nsd.Service(
+        name: _deviceId,
+        type: MdnsCodec.serviceType,
+        port: AppConstants.messagingPort,
+        txt: txt.map((k, v) => MapEntry(k, Uint8List.fromList(v))),
+      ));
+
+      _mdnsDiscovery = await nsd.startDiscovery(
+        MdnsCodec.serviceType,
+        autoResolve: true,
+        ipLookupType: nsd.IpLookupType.v4,
+      );
+      _mdnsDiscovery!.addServiceListener(_onMdnsService);
+      AppLogger.instance
+          .info('mDNS discovery started (${MdnsCodec.serviceType})');
+    } catch (e, stackTrace) {
+      AppLogger.instance.warning('mDNS discovery unavailable: $e');
+      AppLogger.instance.debug('mDNS start error: $stackTrace');
+    }
+  }
+
+  Future<void> _stopMdns() async {
+    _mdnsPresentPeers.clear();
+    try {
+      if (_mdnsDiscovery != null) {
+        _mdnsDiscovery!.removeServiceListener(_onMdnsService);
+        await nsd.stopDiscovery(_mdnsDiscovery!);
+      }
+    } catch (e) {
+      AppLogger.instance.debug('Failed to stop mDNS discovery: $e');
+    }
+    _mdnsDiscovery = null;
+
+    try {
+      if (_mdnsRegistration != null) {
+        await nsd.unregister(_mdnsRegistration!);
+      }
+    } catch (e) {
+      AppLogger.instance.debug('Failed to unregister mDNS service: $e');
+    }
+    _mdnsRegistration = null;
+  }
+
+  void _onMdnsService(nsd.Service service, nsd.ServiceStatus status) {
+    try {
+      final txt = service.txt?.map<String, List<int>?>((k, v) => MapEntry(k, v));
+      final deviceId = MdnsCodec.deviceIdOf(txt, service.name);
+      if (deviceId == null || deviceId == _deviceId) return; // self/invalid
+
+      if (status == nsd.ServiceStatus.found) {
+        final ipv4 = service.addresses
+            ?.where((a) => a.type == InternetAddressType.IPv4);
+        final ip = (ipv4 != null && ipv4.isNotEmpty) ? ipv4.first.address : null;
+        final packet =
+            MdnsCodec.decode(txt, ipAddress: ip, serviceName: service.name);
+        if (packet == null) {
+          AppLogger.instance
+              .debug('mDNS peer $deviceId not yet resolvable (no IPv4)');
+          return;
+        }
+        _mdnsPresentPeers.add(deviceId);
+        _handlePeerDiscovered(packet);
+      } else if (status == nsd.ServiceStatus.lost) {
+        _mdnsPresentPeers.remove(deviceId);
+        removePeer(deviceId);
+      }
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to handle mDNS service event', e, stackTrace);
+    }
   }
 
   void _handleSocketEvent(RawSocketEvent event) {
@@ -285,6 +387,9 @@ class DiscoveryService {
       final expiredPeers = <String>[];
 
       _activePeers.forEach((deviceId, peer) {
+        // Peers currently advertised via mDNS are kept alive by explicit
+        // "service lost" events, not the UDP heartbeat timeout.
+        if (_mdnsPresentPeers.contains(deviceId)) return;
         if (now.difference(peer.lastSeen).inSeconds >
             AppConstants.peerTimeoutSeconds) {
           expiredPeers.add(deviceId);
@@ -340,6 +445,7 @@ class DiscoveryService {
     _avatarColor = null;
     _localIpAddresses = [];
     _activePeers.clear();
+    _mdnsPresentPeers.clear();
   }
 
   void dispose() {
