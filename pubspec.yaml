@@ -46,7 +46,7 @@ dependencies:
 
   # Voice messages
   record: ^5.1.2
-  audioplayers: ^6.1.0
+  audioplayers: ^6.8.1
 
   # OS notifications
   flutter_local_notifications: ^18.0.1
@@ -55,6 +55,12 @@ dependencies:
   intl: ^0.19.0
   logger: ^2.4.0
   logging: ^1.2.0
+
+dependency_overrides:
+  # record_linux 0.7.x lags the record 5.x platform interface and fails to
+  # compile; force the updated implementation. (We target Android/iOS, but the
+  # federated package is still pulled into the build graph.)
+  record_linux: ^1.0.0
 
 dev_dependencies:
   flutter_test:

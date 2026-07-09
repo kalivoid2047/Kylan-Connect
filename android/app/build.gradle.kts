@@ -19,6 +19,8 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // Required by flutter_local_notifications (uses java.time on older APIs).
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -36,7 +38,8 @@ android {
 
     defaultConfig {
         applicationId = "com.kylanconnect.app"
-        minSdk = flutter.minSdkVersion
+        // record (voice messages) requires API 23; keep the floor explicit.
+        minSdk = maxOf(flutter.minSdkVersion, 23)
         targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -56,4 +59,10 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Backports java.time etc. for the min-SDK, required by
+    // flutter_local_notifications' AAR metadata.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
