@@ -41,7 +41,10 @@ dependencies:
   image: ^4.2.0
 
   # File sharing
-  file_picker: ^8.1.2
+  # Bumped for wifi_direct_plugin's constraint; v10 keeps the same
+  # FilePicker.platform.pickFiles() API used in chat_screen.dart (the
+  # breaking static-method rewrite only lands in v11+).
+  file_picker: ^10.2.0
   open_filex: ^4.5.0
 
   # Voice messages
@@ -53,6 +56,14 @@ dependencies:
 
   # mDNS/Bonjour service discovery (Phase 3)
   nsd: ^5.0.1
+
+  # WiFi Direct (Phase 3, Android only, opt-in). Low-adoption package (few
+  # likes, unverified publisher) — used ONLY for peer discovery/group
+  # formation/IP resolution; we do not use its bundled messaging protocol so
+  # a problem with it can't compromise message delivery or encryption.
+  wifi_direct_plugin: ^0.1.7
+  # The plugin doesn't request its own runtime permissions; we request them.
+  permission_handler: ^12.0.3
 
   # Utilities
   intl: ^0.19.0

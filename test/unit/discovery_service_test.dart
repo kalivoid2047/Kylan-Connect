@@ -56,6 +56,24 @@ void main() {
     });
   });
 
+  group('DiscoveryService.refreshInterfacesAndBroadcast', () {
+    test('is a no-op when discovery is not running', () async {
+      // Should not throw even though startDiscovery() was never called.
+      await discoveryService.refreshInterfacesAndBroadcast();
+    });
+
+    test('does not throw once discovery is running', () async {
+      await discoveryService.initialize(
+        deviceId: 'test-device-refresh',
+        deviceName: 'Test Device',
+        avatarColor: '#FF6B6B',
+      );
+      await discoveryService.startDiscovery();
+
+      await discoveryService.refreshInterfacesAndBroadcast();
+    });
+  });
+
   group('DiscoveryService Peer Management', () {
     test('should return null for non-existent peer', () {
       final peer = discoveryService.getPeer('non-existent-id');

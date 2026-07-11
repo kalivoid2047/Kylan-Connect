@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Network permissions for UDP discovery and TCP messaging -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -15,6 +16,33 @@
 
     <!-- Recording voice messages -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <!-- WiFi Direct (opt-in, Android only): peer discovery/group formation.
+         Runtime permission is requested by WifiDirectService before use;
+         the native plugin does not request it itself. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+
+    <!-- The WiFi Direct plugin declares this hardware requirement as
+         required="true", which would make the whole app uninstallable on
+         devices without WiFi Direct hardware; WiFi Direct is opt-in here, so
+         override it to optional. -->
+    <uses-feature android:name="android.hardware.wifi.direct"
+        android:required="false" tools:node="replace"/>
+
+    <!-- The plugin also declares broad media/storage/camera permissions for
+         its own bundled file-transfer feature, which Kylan Connect does not
+         use (it only uses the plugin for link establishment) — drop them so
+         they don't appear in the app's permission surface. -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove"/>
 
     <application
         android:label="Kylan Connect"

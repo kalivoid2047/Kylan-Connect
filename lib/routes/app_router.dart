@@ -8,6 +8,7 @@ import '../features/messaging/group_chat_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/settings/edit_profile_screen.dart';
 import '../features/settings/diagnostics_screen.dart';
+import '../features/settings/wifi_direct_screen.dart';
 import '../repositories/profile_repository.dart';
 
 class AppRouter {
@@ -54,6 +55,10 @@ class AppRouter {
       case '/diagnostics':
         return MaterialPageRoute(
           builder: (_) => const DiagnosticsScreen(),
+        );
+      case '/wifi-direct':
+        return MaterialPageRoute(
+          builder: (_) => const WifiDirectScreen(),
         );
       default:
         return MaterialPageRoute(

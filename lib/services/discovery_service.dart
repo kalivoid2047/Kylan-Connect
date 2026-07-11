@@ -99,6 +99,27 @@ class DiscoveryService {
     }
   }
 
+  /// Re-enumerates local network interfaces and immediately broadcasts on
+  /// them. Interfaces are normally captured once at [initialize] time; call
+  /// this when a new interface may have appeared since then (e.g. a WiFi
+  /// Direct group was just formed) so peers on it are found without waiting
+  /// for the next periodic broadcast. No-op if discovery isn't running.
+  Future<void> refreshInterfacesAndBroadcast() async {
+    if (!_isRunning) return;
+    try {
+      final updated = await _getLocalIpAddresses();
+      if (updated.isNotEmpty) {
+        _localIpAddresses = updated;
+      }
+      broadcastPresence();
+      AppLogger.instance
+          .debug('Refreshed interfaces: $_localIpAddresses');
+    } catch (e, stackTrace) {
+      AppLogger.instance
+          .error('Failed to refresh interfaces', e, stackTrace);
+    }
+  }
+
   Future<void> startDiscovery() async {
     if (_isRunning) {
       AppLogger.instance.warning('Discovery service already running');

@@ -288,6 +288,18 @@ class SettingsScreen extends ConsumerWidget {
             },
           ),
         ),
+        Card(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: ListTile(
+            leading: const Icon(Icons.wifi_tethering),
+            title: const Text('WiFi Direct (Android, experimental)'),
+            subtitle: const Text('Connect directly with no shared router'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.pushNamed(context, '/wifi-direct');
+            },
+          ),
+        ),
         const SizedBox(height: 24),
       ],
     );
