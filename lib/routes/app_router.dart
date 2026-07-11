@@ -3,6 +3,8 @@ import '../features/onboarding/welcome_screen.dart';
 import '../features/onboarding/profile_setup_screen.dart';
 import '../features/conversations/home_screen.dart';
 import '../features/messaging/chat_screen.dart';
+import '../features/messaging/create_group_screen.dart';
+import '../features/messaging/group_chat_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/settings/edit_profile_screen.dart';
 import '../features/settings/diagnostics_screen.dart';
@@ -30,6 +32,15 @@ class AppRouter {
       case '/chat':
         return MaterialPageRoute(
           builder: (_) => const ChatScreen(),
+          settings: settings,
+        );
+      case '/create-group':
+        return MaterialPageRoute(
+          builder: (_) => const CreateGroupScreen(),
+        );
+      case '/group-chat':
+        return MaterialPageRoute(
+          builder: (_) => const GroupChatScreen(),
           settings: settings,
         );
       case '/settings':

@@ -7,6 +7,7 @@ import '../../providers/peer_provider.dart';
 import '../../providers/chat_provider.dart';
 import '../../providers/connection_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../repositories/group_repository.dart';
 import '../../core/widgets/empty_state_widget.dart';
 import '../../core/utils/extensions.dart';
 
@@ -47,6 +48,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           height: 32,
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.group_add_outlined),
+            tooltip: 'New group',
+            onPressed: () {
+              Navigator.pushNamed(context, '/create-group');
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () {
@@ -157,19 +165,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Widget _buildConversationTile(
       Conversation conversation, UserProfile? profile) {
+    final isGroup = GroupRepository.instance.isGroup(conversation.conversationId);
+
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: Color(
           int.parse(
               conversation.participantAvatarColor.replaceFirst('#', '0xFF')),
         ),
-        child: Text(
-          conversation.participantName.initials,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+        child: isGroup
+            ? const Icon(Icons.groups, color: Colors.white, size: 20)
+            : Text(
+                conversation.participantName.initials,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
       ),
       title: Text(conversation.participantName),
       subtitle: Text(
@@ -207,6 +219,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ],
       ),
       onTap: () {
+        if (isGroup) {
+          Navigator.pushNamed(
+            context,
+            '/group-chat',
+            arguments: {'groupId': conversation.conversationId},
+          );
+          return;
+        }
         Navigator.pushNamed(
           context,
           '/chat',
