@@ -45,13 +45,18 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   Future<void> _enable() async {
     setState(() => _starting = true);
     try {
-      final ok = await _service.initialize();
-      if (!ok) {
+      final initialized = await _service.initialize();
+      if (!initialized) {
         _showSnack('Could not start WiFi Direct — permission denied or '
             'unsupported on this device.');
         return;
       }
-      await _service.startDiscovery();
+      final discovering = await _service.startDiscovery();
+      if (!discovering) {
+        _showSnack('WiFi Direct discovery failed to start. Make sure '
+            'Location is turned on in system settings, then try again.');
+        return;
+      }
       if (mounted) setState(() => _discovering = true);
     } finally {
       if (mounted) setState(() => _starting = false);
