@@ -162,6 +162,17 @@ class WifiDirectService {
   Future<bool> startDiscovery() async {
     if (!_initialized) return false;
     try {
+      // Android's WifiP2pManager needs the system Location Services toggle
+      // on (separate from the app's own location permission, already
+      // granted at this point) to return scan results. On many OEMs
+      // discoverPeers() still calls onSuccess with this off -- it just never
+      // reports any peers -- so this has to be checked explicitly rather
+      // than inferred from a discovery failure.
+      if (await Permission.location.serviceStatus != ServiceStatus.enabled) {
+        AppLogger.instance
+            .warning('WiFi Direct: system Location Services is off');
+        return false;
+      }
       return await native.WifiDirectPlugin.startDiscovery();
     } catch (e) {
       AppLogger.instance.debug('WiFi Direct startDiscovery failed: $e');
